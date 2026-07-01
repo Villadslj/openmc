@@ -370,6 +370,7 @@ class AlphaNManager:
         self._sources = list(alpha_n_sources) if alpha_n_sources else []
         self._rng = np.random.default_rng()
         self._is_initialized = False
+        self._alpha_n_fraction = None
 
     @property
     def model(self) -> openmc.Model:
@@ -473,7 +474,7 @@ class AlphaNManager:
         # Use a simple scaling: inject one particle per batch for every
         # unit of source rate, capped at a fraction of n_particles.
         # Users can override via the `alpha_n_fraction` parameter.
-        if hasattr(self, '_alpha_n_fraction'):
+        if self._alpha_n_fraction is not None:
             n_inject = int(self._alpha_n_fraction * n_particles)
         else:
             # Default: use source rate to scale injection.

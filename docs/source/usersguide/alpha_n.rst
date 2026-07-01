@@ -13,7 +13,7 @@ neutrons into the simulation's neutron bank at each batch.
 .. note::
     The ``alphanso`` package is an optional dependency. Install it with::
 
-        pip install alphanso[alpha_n]
+        pip install openmc[alpha_n]
 
     Or install ``alphanso`` directly::
 
