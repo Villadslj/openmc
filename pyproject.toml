@@ -57,6 +57,7 @@ test = [
 ]
 ci = ["coverage>=7.4", "gcovr>=7.2"]
 vtk = ["vtk"]
+alpha_n = ["alphanso"]
 
 [project.urls]
 Homepage = "https://openmc.org"

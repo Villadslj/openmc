@@ -39,6 +39,7 @@ from .config import *
 # Import a few names from the model module
 from openmc.model import Model, SearchResult
 
+from . import alpha_n
 from . import examples
 
 
