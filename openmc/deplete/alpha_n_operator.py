@@ -328,8 +328,9 @@ class AlphaNFixedSourceOperator(CoupledOperator):
                 nuclides.append(nuc)
                 densities.append(val)
 
-        # Clear and rebuild material nuclides
-        material._nuclides.clear()
+        # Clear and rebuild material nuclides using public API
+        for nuc_tuple in list(material.nuclides):
+            material.remove_nuclide(nuc_tuple.name)
         for nuc, dens in zip(nuclides, densities):
             material.add_nuclide(nuc, dens)
 
@@ -400,10 +401,9 @@ class AlphaNFixedSourceOperator(CoupledOperator):
             bin_midpoints, spectrum, interpolation='histogram'
         )
 
-        # Spatial distribution: uniform in the material volume
-        # For simplicity, use the material's bounding box or a point source
-        # at the origin. Users should set spatial distributions on their
-        # (α,n) materials if needed.
+        # Spatial distribution: point source at origin for simplicity.
+        # Users should configure appropriate spatial distributions for
+        # their geometry as needed.
         spatial_dist = openmc.stats.Point()
 
         source = openmc.IndependentSource(
@@ -460,9 +460,7 @@ class AlphaNFixedSourceOperator(CoupledOperator):
             rates.fill(0.0)
             return OperatorResult(ufloat(0.0, 0.0), rates)
 
-        # Use the total computed source rate if source_rate is not explicitly
-        # provided (i.e., if it equals 1.0 as a sentinel), otherwise use
-        # the user-provided rate for normalization
+        # Use the provided source rate for normalization
         effective_source_rate = source_rate
 
         # Run OpenMC fixed-source transport
