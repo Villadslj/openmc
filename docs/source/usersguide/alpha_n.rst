@@ -173,3 +173,8 @@ Limitations
 - Particle positions are sampled from existing fission source sites, which
   approximates the (α,n) spatial distribution as overlapping with the fission
   source.
+
+.. seealso::
+
+    For fixed-source depletion with timestep-wise (α,n) recomputation, see
+    :ref:`usersguide_alpha_n_depletion`.
