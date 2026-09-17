@@ -10,6 +10,7 @@ from .chain import *
 from .openmc_operator import *
 from .coupled_operator import *
 from .independent_operator import *
+from .alpha_n_operator import *
 from .microxs import *
 from .reaction_rates import *
 from .atom_number import *

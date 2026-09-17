@@ -23,6 +23,7 @@ essential aspects of using OpenMC to perform simulations.
     depletion
     decay_sources
     alpha_n
+    alpha_n_depletion
     kinetics
     scripts
     processing
