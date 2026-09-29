@@ -18,6 +18,25 @@ from ..mpi import comm
 from openmc.lib import TemporarySession
 
 
+def enumerate_regions(
+    mmv_list: list[openmc.MeshMaterialVolumes]
+) -> list[tuple[int, int, int]]:
+    """Enumerate activation regions across all meshes.
+
+    Returns the canonical ordering of (mesh index, element index, material ID)
+    triples that defines the index used for activation materials, fluxes, and
+    microscopic cross sections.
+    """
+    regions = []
+    for mesh_idx, mmv in enumerate(mmv_list):
+        mask = mmv._materials > -1
+        mat_ids = mmv._materials[mask]
+        elems, _ = np.where(mask)
+        for elem, mat_id in zip(elems, mat_ids):
+            regions.append((mesh_idx, int(elem), int(mat_id)))
+    return regions
+
+
 def get_activation_materials(
     model: openmc.Model,
     mmv_list: list[openmc.MeshMaterialVolumes]
@@ -52,9 +71,10 @@ def get_activation_materials(
     # across all meshes
     materials = openmc.Materials()
     for mesh_idx, mmv in enumerate(mmv_list):
-        mat_ids = mmv._materials[mmv._materials > -1]
-        volumes = mmv._volumes[mmv._materials > -1]
-        elems, _ = np.where(mmv._materials > -1)
+        mask = mmv._materials > -1
+        mat_ids = mmv._materials[mask]
+        volumes = mmv._volumes[mask]
+        elems, _ = np.where(mask)
 
         for elem, mat_id, vol in zip(elems, mat_ids, volumes):
             mat = material_dict[mat_id]
@@ -291,6 +311,8 @@ class R2SManager:
         'neutron_tallies' key. For a mesh-based calculation, this step will
         also populate the 'mesh_material_volumes' key (a list of
         :class:`~openmc.MeshMaterialVolumes`, one per mesh).
+        The region, tally-bin, and flux/cross-section indexing is validated,
+        and a :class:`RuntimeError` is raised if it is inconsistent.
 
         Parameters
         ----------
@@ -330,6 +352,23 @@ class R2SManager:
                     openmc.MeshMaterialFilter.from_volumes(mesh, mmv))
 
             self.results['mesh_material_volumes'] = mmv_list
+            self.results['regions'] = enumerate_regions(mmv_list)
+
+            # The activation material index, the flux index, and the tally bin
+            # index must all refer to the same (mesh, element, material).
+            filter_regions = [
+                (i, int(elem), int(mat_id))
+                for i, f in enumerate(domain_filters)
+                for elem, mat_id in f.bins
+            ]
+            if filter_regions != self.results['regions']:
+                raise RuntimeError(
+                    'Mesh-material filter bins do not match the enumerated '
+                    'activation regions. Fluxes and cross sections would be '
+                    'associated with the wrong materials. This usually '
+                    'indicates overlapping or ill-defined geometry, so that '
+                    'the material volume ray trace is not reproducible.'
+                )
             domains = domain_filters
         else:
             domains: Sequence[openmc.Cell] = self.domains
@@ -387,6 +426,9 @@ class R2SManager:
         if comm.rank == 0:
             np.save(output_dir / 'fluxes.npy', self.results['fluxes'])
             write_microxs_hdf5(self.results['micros'], output_dir / 'micros.h5')
+            if self.method == 'mesh-based':
+                with open(output_dir / 'regions.json', 'w') as f:
+                    json.dump(self.results['regions'], f)
 
     def step2_activation(
         self,
@@ -403,6 +445,8 @@ class R2SManager:
         material using the fluxes and microscopic cross sections obtained in the
         neutron transport step. This step will populate the 'depletion_results'
         and 'activation_materials' keys in the results dictionary.
+        The region, material, flux, and cross-section indexing is validated,
+        and a :class:`RuntimeError` is raised if it is inconsistent.
 
         Parameters
         ----------
@@ -431,6 +475,18 @@ class R2SManager:
             mmv_list = self.results['mesh_material_volumes']
             self.results['activation_materials'] = get_activation_materials(
                 self.neutron_model, mmv_list)
+            n_regions = len(
+                self.results.get('regions', enumerate_regions(mmv_list)))
+            n_mats = len(self.results['activation_materials'])
+            n_flux = len(self.results['fluxes'])
+            n_micro = len(self.results['micros'])
+            if not (n_regions == n_mats == n_flux == n_micro):
+                raise RuntimeError(
+                    f'Inconsistent activation data: {n_regions} regions, '
+                    f'{n_mats} materials, {n_flux} fluxes, {n_micro} micros. '
+                    'The mesh material volumes used for the activation step '
+                    'do not match those used for the neutron transport step.'
+                )
         else:
             # Create unique material for each cell
             activation_mats = openmc.Materials()
@@ -447,6 +503,14 @@ class R2SManager:
         output_dir.mkdir(parents=True, exist_ok=True)
         self.results['activation_materials'].export_to_xml(
             output_dir / 'materials.xml')
+
+        mat_ids = [m.id for m in self.results['activation_materials']]
+        if len(set(mat_ids)) != len(mat_ids) or mat_ids != sorted(mat_ids):
+            raise RuntimeError(
+                'Activation material IDs are not unique and increasing; '
+                'fluxes and cross sections would be permuted relative to '
+                'materials by IndependentOperator.'
+            )
 
         # Create depletion operator for the activation materials
         if operator_kwargs is None:
@@ -815,6 +879,12 @@ class R2SManager:
                 self.results['mesh_material_volumes'] = [
                     openmc.MeshMaterialVolumes.from_npz(f) for f in mmv_files
                 ]
+            regions_file = neutron_dir / 'regions.json'
+            if regions_file.exists():
+                with regions_file.open('r') as f:
+                    self.results['regions'] = [
+                        tuple(region) for region in json.load(f)
+                    ]
         fluxes_file = neutron_dir / 'fluxes.npy'
         if fluxes_file.exists():
             self.results['fluxes'] = list(np.load(fluxes_file, allow_pickle=True))
