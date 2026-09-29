@@ -1,8 +1,12 @@
+from contextlib import nullcontext
 from pathlib import Path
+import re
 
+import numpy as np
 import pytest
 import openmc
 from openmc.deplete import Chain, R2SManager
+from openmc.deplete.r2s import enumerate_regions, get_activation_materials
 
 
 @pytest.fixture
@@ -56,6 +60,93 @@ def source_stage_manager(simple_model_and_mesh):
     return r2s, bounding_boxes
 
 
+@pytest.fixture
+def activation_regions():
+    openmc.reset_auto_ids()
+    materials = [openmc.Material(material_id=i) for i in (10, 20, 30)]
+    model = openmc.Model(geometry=openmc.Geometry([
+        openmc.Cell(fill=material) for material in materials
+    ]))
+    mesh = openmc.RegularMesh()
+    mesh.dimension = (3,)
+    mesh.lower_left = (0.0,)
+    mesh.upper_right = (3.0,)
+    mmv = openmc.MeshMaterialVolumes(
+        np.array([[10, 20], [-1, -1], [30, -1]]),
+        np.array([[0.4, 0.6], [0.0, 0.0], [1.0, 0.0]]),
+    )
+    return model, mesh, mmv
+
+
+def test_enumerate_regions(activation_regions):
+    model, mesh, mmv = activation_regions
+    regions = enumerate_regions([mmv])
+
+    assert regions == [(0, 0, 10), (0, 0, 20), (0, 2, 30)]
+
+    mesh_filter = openmc.MeshMaterialFilter.from_volumes(mesh, mmv)
+    filter_regions = [
+        (0, int(elem), int(mat_id)) for elem, mat_id in mesh_filter.bins
+    ]
+    assert filter_regions == regions
+
+    activation_materials = get_activation_materials(model, [mmv])
+    name_pattern = re.compile(r'Mesh (\d+), Element (\d+), Material (\d+)')
+    material_regions = [
+        tuple(map(int, name_pattern.fullmatch(mat.name).groups()))
+        for mat in activation_materials
+    ]
+    assert material_regions == regions
+
+
+def test_step2_rejects_inconsistent_counts(activation_regions, tmp_path):
+    model, mesh, mmv = activation_regions
+    r2s = R2SManager(model, mesh)
+    r2s.results = {
+        'mesh_material_volumes': [mmv],
+        'regions': enumerate_regions([mmv]),
+        'fluxes': [object(), object()],
+        'micros': [object(), object(), object()],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            'Inconsistent activation data: 3 regions, 3 materials, 2 fluxes, '
+            '3 micros'
+        ),
+    ):
+        r2s.step2_activation([1.0], 1.0, output_dir=tmp_path)
+
+
+@pytest.mark.parametrize('mat_ids', [(100, 100), (101, 100)])
+def test_step2_rejects_nonmonotonic_material_ids(
+    activation_regions, tmp_path, monkeypatch, mat_ids
+):
+    model, mesh, mmv = activation_regions
+    activation_materials = openmc.Materials()
+    for mat_id in mat_ids:
+        with pytest.warns(openmc.IDWarning) if mat_id in {
+            mat.id for mat in activation_materials
+        } else nullcontext():
+            activation_materials.append(openmc.Material(material_id=mat_id))
+
+    monkeypatch.setattr(
+        'openmc.deplete.r2s.get_activation_materials',
+        lambda model, mmv_list: activation_materials,
+    )
+    r2s = R2SManager(model, mesh)
+    r2s.results = {
+        'mesh_material_volumes': [mmv],
+        'regions': [(0, 0, 10), (0, 0, 20)],
+        'fluxes': [object(), object()],
+        'micros': [object(), object()],
+    }
+
+    with pytest.raises(RuntimeError, match='not unique and increasing'):
+        r2s.step2_activation([1.0], 1.0, output_dir=tmp_path)
+
+
 def test_r2s_mesh_expected_output(simple_model_and_mesh, tmp_path):
     model, (c1, c2), mesh = simple_model_and_mesh
 
@@ -78,6 +169,7 @@ def test_r2s_mesh_expected_output(simple_model_and_mesh, tmp_path):
     nt = Path(outdir) / 'neutron_transport'
     assert (nt / 'fluxes.npy').exists()
     assert (nt / 'micros.h5').exists()
+    assert (nt / 'regions.json').exists()
     assert (nt / 'tally_ids.json').exists()
     assert (nt / 'mesh_material_volumes_0.npz').exists()
     act = Path(outdir) / 'activation'
@@ -109,6 +201,7 @@ def test_r2s_mesh_expected_output(simple_model_and_mesh, tmp_path):
     r2s_loaded.load_results(outdir)
     assert len(r2s_loaded.results['fluxes']) == 2
     assert len(r2s_loaded.results['micros']) == 2
+    assert len(r2s_loaded.results['regions']) == 2
     assert r2s_loaded.results['neutron_tallies'] == []
     assert len(r2s_loaded.results['mesh_material_volumes']) == 1
     assert len(r2s_loaded.results['mesh_material_volumes'][0]) == 2
@@ -148,6 +241,7 @@ def test_r2s_multi_mesh(simple_model_and_mesh, tmp_path):
     nt = Path(outdir) / 'neutron_transport'
     assert (nt / 'fluxes.npy').exists()
     assert (nt / 'micros.h5').exists()
+    assert (nt / 'regions.json').exists()
     assert (nt / 'mesh_material_volumes_0.npz').exists()
     assert (nt / 'mesh_material_volumes_1.npz').exists()
     act = Path(outdir) / 'activation'
@@ -178,6 +272,7 @@ def test_r2s_multi_mesh(simple_model_and_mesh, tmp_path):
     assert len(r2s_loaded.results['mesh_material_volumes']) == 2
     assert len(r2s_loaded.results['mesh_material_volumes'][0]) == 2
     assert len(r2s_loaded.results['mesh_material_volumes'][1]) == 2
+    assert len(r2s_loaded.results['regions']) == 4
     assert len(r2s_loaded.results['activation_materials']) == 4
     assert len(r2s_loaded.results['depletion_results']) == 2
 
