@@ -331,6 +331,7 @@ def test_settings(lib_init):
         'inactive': settings.inactive + 1,
         'max_lost_particles': settings.max_lost_particles + 1,
         'max_write_lost_particles': settings.max_write_lost_particles + 1,
+        'lost_particle_history': settings.lost_particle_history + 1,
         'need_depletion_rx': not settings.need_depletion_rx,
         'output_summary': not settings.output_summary,
         'particles': settings.particles + 1,
@@ -357,6 +358,9 @@ def test_settings(lib_init):
         settings.run_mode = 'plot'
         assert settings.run_mode == 'plot'
         assert isinstance(settings.path_statepoint, str)
+
+        with pytest.raises(exc.InvalidArgumentError):
+            settings.lost_particle_history = -1
     finally:
         for name, value in original_values.items():
             setattr(settings, name, value)

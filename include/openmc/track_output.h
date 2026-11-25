@@ -1,6 +1,8 @@
 #ifndef OPENMC_TRACK_OUTPUT_H
 #define OPENMC_TRACK_OUTPUT_H
 
+#include "hdf5.h"
+
 #include "openmc/particle.h"
 
 namespace openmc {
@@ -8,6 +10,12 @@ namespace openmc {
 //==============================================================================
 // Non-member functions
 //==============================================================================
+
+//! Create the HDF5 compound datatype of TrackState
+//
+//! \return HDF5 identifier of the datatype, which has to be closed with
+//!   H5Tclose
+hid_t create_track_state_type();
 
 //! Open HDF5 track file for writing and create track datatype
 void open_track_file();

@@ -104,6 +104,7 @@ int32_t n_inactive {0};
 int32_t max_lost_particles {10};
 double rel_max_lost_particles {1.0e-6};
 int32_t max_write_lost_particles {-1};
+int32_t lost_particle_history {0};
 int32_t gen_per_batch {1};
 int64_t n_particles {-1};
 
@@ -209,6 +210,17 @@ void get_run_parameters(pugi::xml_node node_base)
   if (check_for_node(node_base, "max_write_lost_particles")) {
     max_write_lost_particles =
       std::stoi(get_node_value(node_base, "max_write_lost_particles"));
+  }
+
+  // Get number of recent states written to the files of lost particles
+  if (check_for_node(node_base, "lost_particle_history")) {
+    lost_particle_history =
+      std::stoi(get_node_value(node_base, "lost_particle_history"));
+    if (lost_particle_history < 0 ||
+        lost_particle_history > MAX_LOST_PARTICLE_HISTORY) {
+      fatal_error(fmt::format("lost_particle_history must be between 0 and {}.",
+        MAX_LOST_PARTICLE_HISTORY));
+    }
   }
 
   // Get number of inactive batches
@@ -1466,6 +1478,8 @@ extern "C" int openmc_setting_get_int32(const char* name, int32_t* value)
     *value = settings::max_lost_particles;
   } else if (std::strcmp(name, "max_write_lost_particles") == 0) {
     *value = settings::max_write_lost_particles;
+  } else if (std::strcmp(name, "lost_particle_history") == 0) {
+    *value = settings::lost_particle_history;
   } else if (std::strcmp(name, "n_inactive") == 0) {
     *value = settings::n_inactive;
   } else if (std::strcmp(name, "run_mode") == 0) {
@@ -1491,6 +1505,13 @@ extern "C" int openmc_setting_set_int32(const char* name, int32_t value)
     settings::max_lost_particles = value;
   } else if (std::strcmp(name, "max_write_lost_particles") == 0) {
     settings::max_write_lost_particles = value;
+  } else if (std::strcmp(name, "lost_particle_history") == 0) {
+    if (value < 0 || value > MAX_LOST_PARTICLE_HISTORY) {
+      set_errmsg(fmt::format("lost_particle_history must be between 0 and {}.",
+        MAX_LOST_PARTICLE_HISTORY));
+      return OPENMC_E_INVALID_ARGUMENT;
+    }
+    settings::lost_particle_history = value;
   } else if (std::strcmp(name, "n_inactive") == 0) {
     settings::n_inactive = value;
   } else if (std::strcmp(name, "run_mode") == 0) {

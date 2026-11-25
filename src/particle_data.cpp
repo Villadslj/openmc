@@ -113,6 +113,11 @@ ParticleData::ParticleData()
   if (!model::pulse_height_cells.empty()) {
     pht_storage_.resize(model::pulse_height_cells.size(), 0.0);
   }
+
+  // Allocate the recent states that are written for lost particles
+  if (settings::lost_particle_history > 0) {
+    recent_states_.resize(settings::lost_particle_history);
+  }
 }
 
 TrackState ParticleData::get_track_state() const
@@ -123,8 +128,15 @@ TrackState ParticleData::get_track_state() const
   state.E = this->E();
   state.time = this->time();
   state.wgt = this->wgt();
-  state.cell_id = model::cells[this->lowest_coord().cell()]->id_;
-  state.cell_instance = this->cell_instance();
+  // The cell is unknown if the particle could not be located at its birth
+  int i_cell = this->lowest_coord().cell();
+  if (i_cell == C_NONE) {
+    state.cell_id = C_NONE;
+    state.cell_instance = C_NONE;
+  } else {
+    state.cell_id = model::cells[i_cell]->id_;
+    state.cell_instance = this->cell_instance();
+  }
   if (this->material() != MATERIAL_VOID) {
     state.material_id = model::materials[material()]->id_;
   }

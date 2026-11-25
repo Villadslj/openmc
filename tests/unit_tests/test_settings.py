@@ -18,6 +18,7 @@ def test_export_to_xml(run_in_tmpdir):
     s.particles = 1000000
     s.max_lost_particles = 5
     s.rel_max_lost_particles = 1e-4
+    s.lost_particle_history = 20
     s.keff_trigger = {'type': 'std_dev', 'threshold': 0.001}
     s.energy_mode = 'continuous-energy'
     s.max_order = 5
@@ -109,6 +110,7 @@ def test_export_to_xml(run_in_tmpdir):
     assert s.particles == 1000000
     assert s.max_lost_particles == 5
     assert s.rel_max_lost_particles == 1e-4
+    assert s.lost_particle_history == 20
     assert s.keff_trigger == {'type': 'std_dev', 'threshold': 0.001}
     assert s.energy_mode == 'continuous-energy'
     assert s.max_order == 5

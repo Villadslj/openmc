@@ -86,6 +86,9 @@ class _Settings:
     max_write_lost_particles = _DLLFunctionProperty(
         c_int32, 'max_write_lost_particles'
     )
+    lost_particle_history = _DLLFunctionProperty(
+        c_int32, 'lost_particle_history'
+    )
     need_depletion_rx = _DLLFunctionProperty(c_bool, 'need_depletion_rx')
     output_summary = _DLLFunctionProperty(c_bool, 'output_summary')
     particles = _DLLFunctionProperty(c_int64, 'n_particles')

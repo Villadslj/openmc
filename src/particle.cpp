@@ -243,6 +243,7 @@ void Particle::event_calculate_xs()
   // Write particle track.
   if (write_track())
     write_particle_track(*this);
+  record_recent_state();
 
   if (settings::check_overlaps)
     check_cell_overlap(*this);
@@ -498,11 +499,14 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   // Write final position for the previous track (skip if this is a freshly
   // constructed particle with no prior track, e.g., Phase 2 of shared
   // secondary transport)
-  if (write_track() && n_event() > 0) {
-    write_particle_track(*this);
+  if (n_event() > 0) {
+    if (write_track())
+      write_particle_track(*this);
+    record_recent_state();
   }
 
   from_source(&site);
+  start_recent_track();
 
   n_event() = 0;
   if (!settings::use_shared_secondary_bank) {
@@ -718,6 +722,7 @@ void Particle::cross_surface(const Surface& surf)
     // the particle is really traveling tangent to a surface, if we move it
     // forward a tiny bit it should fix the problem.
 
+    int crossed_surface = surface();
     surface() = SURFACE_NONE;
     n_coord() = 1;
     r() += TINY_BIT * u();
@@ -726,9 +731,13 @@ void Particle::cross_surface(const Surface& surf)
     // undefined region in the geometry.
 
     if (!exhaustive_find_cell(*this, verbose)) {
+      // Record the crossed surface in the file of the lost particle, but do
+      // not score the crossing in surface tallies
+      surface() = crossed_surface;
       mark_as_lost("After particle " + std::to_string(id()) +
                    " crossed surface " + std::to_string(surf.id_) +
                    " it could not be located in any cell and it did not leak.");
+      surface() = SURFACE_NONE;
       return;
     }
   }
@@ -871,7 +880,7 @@ void Particle::mark_as_lost(const char* message)
   warning(message);
   if (settings::max_write_lost_particles < 0 ||
       simulation::n_lost_particles < settings::max_write_lost_particles) {
-    write_restart();
+    write_restart(message);
   }
   // Increment number of lost particles
   wgt() = 0.0;
@@ -890,7 +899,7 @@ void Particle::mark_as_lost(const char* message)
   }
 }
 
-void Particle::write_restart() const
+void Particle::write_restart(const char* lost_message) const
 {
   // Dont write another restart file if in particle restart mode
   if (settings::run_mode == RunMode::PARTICLE)
@@ -899,6 +908,12 @@ void Particle::write_restart() const
   // Set up file name
   auto filename = fmt::format("{}particle_{}_{}.h5", settings::path_output,
     simulation::current_batch, id());
+
+  // Gather the most recent states of the particle history, ending with the
+  // state in which the particle was lost
+  RecentHistory history;
+  if (lost_message)
+    history = recent_history();
 
 #pragma omp critical(WriteParticleRestart)
   {
@@ -956,9 +971,119 @@ void Particle::write_restart() const
     write_dataset(file_id, "uvw", site.u);
     write_dataset(file_id, "time", site.time);
 
+    // Write the state of a lost particle
+    if (lost_message) {
+      hid_t lost_group = create_group(file_id, "lost");
+      write_lost_state(lost_group, lost_message, history);
+      close_group(lost_group);
+    }
+
     // Close file
     file_close(file_id);
   } // #pragma omp critical
+}
+
+Particle::RecentHistory Particle::recent_history() const
+{
+  RecentHistory history;
+  const auto& buffer = recent_states();
+  if (buffer.empty())
+    return history;
+
+  // Add a state, starting a new track if it belongs to a different track than
+  // the previous state
+  int last_track = C_NONE;
+  auto add_state = [&](const TrackState& state, ParticleType particle,
+                     int track) {
+    if (track != last_track) {
+      history.offsets.push_back(history.states.size());
+      history.particles.push_back(particle.pdg_number());
+      last_track = track;
+    }
+    history.states.push_back(state);
+  };
+
+  // The ring buffer holds the most recent states in chronological order,
+  // starting after the oldest one. One entry is left for the current state.
+  int64_t n_buffer = buffer.size();
+  int64_t n = std::min(n_recent_states(), n_buffer - 1);
+  for (int64_t i = n_recent_states() - n; i < n_recent_states(); ++i) {
+    const auto& entry = buffer[i % n_buffer];
+    add_state(entry.state, entry.particle, entry.track);
+  }
+  add_state(get_track_state(), type(), recent_track());
+  history.offsets.push_back(history.states.size());
+  return history;
+}
+
+void Particle::write_lost_state(
+  hid_t group, const char* message, const RecentHistory& history) const
+{
+  write_dataset(group, "message", message);
+  write_dataset(group, "xyz", r());
+  write_dataset(group, "uvw", u());
+  write_dataset(group, "energy", settings::run_CE ? E() : g());
+  write_dataset(group, "time", time());
+  write_dataset(group, "weight", wgt());
+  write_dataset(group, "xyz_last", r_last());
+  write_dataset(group, "uvw_last", u_last());
+  write_dataset(group, "n_event", n_event());
+
+  // Cells and universes at each coordinate level. Where the particle could not
+  // be located, these are the cells it was last located in.
+  vector<int> cell_ids;
+  vector<int> universe_ids;
+  for (int j = 0; j < n_coord(); ++j) {
+    int i_cell = coord(j).cell();
+    int i_univ = coord(j).universe();
+    cell_ids.push_back(i_cell == C_NONE ? C_NONE : model::cells[i_cell]->id_);
+    universe_ids.push_back(
+      i_univ == C_NONE ? C_NONE : model::universes[i_univ]->id_);
+  }
+  write_dataset(group, "cell_id", cell_ids);
+  write_dataset(group, "universe_id", universe_ids);
+  write_dataset(group, "cell_instance",
+    lowest_coord().cell() == C_NONE ? C_NONE : cell_instance());
+
+  // Cells the particle was in before it last crossed a surface
+  vector<int> cell_last_ids;
+  for (int j = 0; j < n_coord_last(); ++j) {
+    int i_cell = cell_last(j);
+    cell_last_ids.push_back(
+      i_cell == C_NONE ? C_NONE : model::cells[i_cell]->id_);
+  }
+  write_dataset(group, "cell_last_id", cell_last_ids);
+
+  write_dataset(group, "material_id",
+    material() == MATERIAL_VOID ? MATERIAL_VOID
+                                : model::materials[material()]->id_);
+
+  // Signed ID of the surface the particle was on, where the sign indicates the
+  // side of the surface the particle was moving to
+  int surface_id = 0;
+  if (surface() != SURFACE_NONE) {
+    surface_id = model::surfaces[surface_index()]->id_;
+    if (surface() < 0)
+      surface_id = -surface_id;
+  }
+  write_dataset(group, "surface_id", surface_id);
+
+  // Most recent states of the particle history, with the same layout as the
+  // datasets in track files
+  if (!history.states.empty()) {
+    hid_t dtype = create_track_state_type();
+    hsize_t dims[] {static_cast<hsize_t>(history.states.size())};
+    hid_t dspace = H5Screate_simple(1, dims, nullptr);
+    hid_t dset = H5Dcreate(
+      group, "history", dtype, dspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(dset, dtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, history.states.data());
+    write_attribute(dset, "n_particles", history.particles.size());
+    write_attribute(dset, "offsets", history.offsets);
+    write_attribute(dset, "particles", history.particles);
+    H5Dclose(dset);
+    H5Sclose(dspace);
+    H5Tclose(dtype);
+  }
 }
 
 void Particle::update_neutron_xs(

@@ -112,6 +112,29 @@ Working with the unique integer IDs of cells may be cumbersome; if you provide
 names to your cells, these names will show up in the Plot Explorer, which will
 aid geometry debugging.
 
+When a particle is lost, OpenMC writes a :ref:`particle restart file
+<io_particle_restart>` named ``particle_<batch>_<id>.h5``, unless the number of
+these files has reached :attr:`openmc.Settings.max_write_lost_particles`.
+Besides the source site of the particle, the file describes where and how the
+particle was lost, including its position and direction, the cells it was last
+located in, and the surface it was crossing. This information can be read with
+:class:`openmc.Particle`:
+
+.. code-block:: python
+
+    particle = openmc.Particle('particle_1_42.h5')
+    print(particle.lost_message)
+    print(particle.lost_position, particle.lost_surface_id)
+
+To see how lost particles got there, set
+:attr:`openmc.Settings.lost_particle_history` to the number of the most recent
+states of each particle history that should be written to the file. These
+states are available as tracks from the ``history`` attribute of
+:class:`openmc.Particle`. Alternatively, the complete history of a lost particle
+and its secondary particles can be written to a :ref:`track file <io_track>` by
+replaying it with ``openmc --restart particle_1_42.h5 --track``, which requires
+the same model and nuclear data as the original simulation.
+
 Another method to check for overlapping cells in a geometry is to run the problem in
 geometry debugging mode with the ``-g``, ``-geometry-debug``, or
 ``--geometry-debug`` command-line options.  This will enable checks for

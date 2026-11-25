@@ -95,6 +95,14 @@ struct TrackStateHistory {
   std::vector<TrackState> states;
 };
 
+//! Track state recorded in the recent history of a particle, which is written
+//! to the file of a lost particle
+struct RecentTrackState {
+  TrackState state;
+  ParticleType particle; //!< Type of the particle of the track
+  int track;             //!< Index of the track within the particle history
+};
+
 //! Saved ("banked") state of a particle, for nu-fission tallying
 struct NuBank {
   double E;          //!< particle energy
@@ -552,6 +560,10 @@ private:
 
   vector<TrackStateHistory> tracks_;
 
+  vector<RecentTrackState> recent_states_;
+  int64_t n_recent_states_ {0};
+  int recent_track_ {0};
+
   vector<NuBank> nu_bank_;
 
   vector<double> pht_storage_;
@@ -730,6 +742,45 @@ public:
   // Tracks to output to file
   decltype(tracks_)& tracks() { return tracks_; }
 
+  // Ring buffer with the most recent states of the particle history, which is
+  // only allocated when settings::lost_particle_history > 0
+  const vector<RecentTrackState>& recent_states() const
+  {
+    return recent_states_;
+  }
+
+  // Number of states recorded since the start of the particle history
+  int64_t n_recent_states() const { return n_recent_states_; }
+
+  // Index of the current track within the particle history
+  int recent_track() const { return recent_track_; }
+
+  //! Clear the recent states at the start of a particle history
+  void reset_recent_states()
+  {
+    n_recent_states_ = 0;
+    recent_track_ = 0;
+  }
+
+  //! Start a new track in the recent states, e.g. for a secondary particle
+  void start_recent_track()
+  {
+    if (n_recent_states_ > 0)
+      ++recent_track_;
+  }
+
+  //! Record the current state of the particle in the recent states
+  void record_recent_state()
+  {
+    if (recent_states_.empty())
+      return;
+    auto& entry = recent_states_[n_recent_states_ % recent_states_.size()];
+    entry.state = get_track_state();
+    entry.particle = type_;
+    entry.track = recent_track_;
+    ++n_recent_states_;
+  }
+
   // Bank of recently fissioned particles
   decltype(nu_bank_)& nu_bank() { return nu_bank_; }
   NuBank& nu_bank(int i) { return nu_bank_[i]; }
@@ -751,6 +802,7 @@ public:
 
   // Number of events particle has undergone
   int& n_event() { return n_event_; }
+  int n_event() const { return n_event_; }
 
   // Number of times variance reduction has caused a particle split
   int64_t n_split() const { return n_split_; }

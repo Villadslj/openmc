@@ -27,7 +27,7 @@ constexpr int HDF5_VERSION[] {3, 0};
 
 // Version numbers for binary files
 constexpr array<int, 2> VERSION_STATEPOINT {18, 2};
-constexpr array<int, 2> VERSION_PARTICLE_RESTART {2, 1};
+constexpr array<int, 2> VERSION_PARTICLE_RESTART {2, 2};
 constexpr array<int, 2> VERSION_TRACK {3, 1};
 constexpr array<int, 2> VERSION_SUMMARY {6, 1};
 constexpr array<int, 2> VERSION_VOLUME {1, 0};
@@ -65,6 +65,10 @@ constexpr double PLANE_ALIGNMENT_TOL {1e-12};
 
 // Maximum number of random samples per history
 constexpr int MAX_SAMPLE {100000};
+
+// Maximum number of recent states of a particle history that are kept for the
+// files of lost particles. Every particle in flight stores this many states.
+constexpr int MAX_LOST_PARTICLE_HISTORY {10000};
 
 // Relative dead band applied to weight window comparisons: particles split
 // only above upper * (1 + tol) and roulette only below lower * (1 - tol).
