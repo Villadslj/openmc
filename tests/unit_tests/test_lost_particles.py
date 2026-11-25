@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import numpy as np
 import openmc
+import openmc.lib
 import pytest
 
 from tests.testing_harness import config
@@ -47,3 +49,37 @@ def test_max_write_lost_particles(model: openmc.Model, run_in_tmpdir):
     n_procs = int(config['mpi_np']) if config['mpi'] else 1
     assert len(lost_particle_files) == model.settings.max_write_lost_particles * n_procs
 
+
+
+def test_raytrace_lost_rays(model: openmc.Model, run_in_tmpdir, mpi_intracomm):
+    # Rays that pass through the undefined region between the spheres are
+    # flagged in the ID buffer of a solid ray-traced plot instead of stopping
+    # OpenMC
+    model.init_lib(output=False, intracomm=mpi_intracomm)
+    try:
+        inner, outer = model.geometry.root_universe.cells.values()
+        plot = openmc.lib.SolidRayTracePlot()
+        plot.pixels = (20, 20)
+        plot.color_by = openmc.lib.SolidRayTracePlot.COLOR_BY_CELL
+        plot.set_default_colors()
+        plot.set_all_opaque()
+        plot.camera_position = (300.0, 0.0, 0.0)
+        plot.look_at = (0.0, 0.0, 0.0)
+        plot.up = (0.0, 0.0, 1.0)
+        plot.fov = 60.0
+
+        # Looking through the outer shell, every ray that reaches the inner
+        # sphere crosses the gap
+        plot.set_domain_styles([outer.id], alphas=[0.0])
+        _, depth, ids, _ = plot.render(normals=False)
+        assert ids[10, 10] == -2
+        assert depth[10, 10] == pytest.approx(300.0 - 80.0, rel=1e-6)
+        assert np.all(ids[np.isfinite(depth)] == -2)
+
+        # Rays stop at the outer shell when it is opaque
+        plot.set_domain_styles([outer.id], alphas=[1.0])
+        _, depth, ids, _ = plot.render(normals=False)
+        assert ids[10, 10] == outer.id
+        assert depth[10, 10] == pytest.approx(300.0 - 100.0, rel=1e-6)
+    finally:
+        model.finalize_lib()

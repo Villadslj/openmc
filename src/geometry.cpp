@@ -266,6 +266,7 @@ bool find_cell_inner(
           p.mark_as_lost(fmt::format(
             "Particle {} left lattice {}, but it has no outer definition.",
             p.id(), lat.id_));
+          return false;
         }
       }
     }

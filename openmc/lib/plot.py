@@ -1,6 +1,7 @@
+from collections import namedtuple
 from collections.abc import Mapping
 from ctypes import (c_bool, c_int, c_size_t, c_int32,
-                    c_double, c_uint8, Structure, POINTER)
+                    c_double, c_float, c_uint8, Structure, POINTER)
 from weakref import WeakValueDictionary
 
 from ..exceptions import AllocationError, InvalidIDError
@@ -430,6 +431,89 @@ _dll.openmc_solidraytrace_plot_set_diffuse_fraction.argtypes = [c_int32, c_doubl
 _dll.openmc_solidraytrace_plot_set_diffuse_fraction.restype = c_int
 _dll.openmc_solidraytrace_plot_set_diffuse_fraction.errcheck = _error_handler
 
+_dll.openmc_solidraytrace_plot_get_orthographic_width.argtypes = [
+    c_int32, POINTER(c_double)]
+_dll.openmc_solidraytrace_plot_get_orthographic_width.restype = c_int
+_dll.openmc_solidraytrace_plot_get_orthographic_width.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_set_orthographic_width.argtypes = [
+    c_int32, c_double]
+_dll.openmc_solidraytrace_plot_set_orthographic_width.restype = c_int
+_dll.openmc_solidraytrace_plot_set_orthographic_width.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_get_clip_box.argtypes = [
+    c_int32, POINTER(c_double), POINTER(c_double)]
+_dll.openmc_solidraytrace_plot_get_clip_box.restype = c_int
+_dll.openmc_solidraytrace_plot_get_clip_box.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_set_clip_box.argtypes = [
+    c_int32, POINTER(c_double), POINTER(c_double)]
+_dll.openmc_solidraytrace_plot_set_clip_box.restype = c_int
+_dll.openmc_solidraytrace_plot_set_clip_box.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_get_show_cut_faces.argtypes = [
+    c_int32, POINTER(c_bool)]
+_dll.openmc_solidraytrace_plot_get_show_cut_faces.restype = c_int
+_dll.openmc_solidraytrace_plot_get_show_cut_faces.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_set_show_cut_faces.argtypes = [c_int32, c_bool]
+_dll.openmc_solidraytrace_plot_set_show_cut_faces.restype = c_int
+_dll.openmc_solidraytrace_plot_set_show_cut_faces.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_get_background.argtypes = [
+    c_int32, POINTER(c_uint8), POINTER(c_uint8), POINTER(c_uint8)]
+_dll.openmc_solidraytrace_plot_get_background.restype = c_int
+_dll.openmc_solidraytrace_plot_get_background.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_set_background.argtypes = [
+    c_int32, c_uint8, c_uint8, c_uint8]
+_dll.openmc_solidraytrace_plot_set_background.restype = c_int
+_dll.openmc_solidraytrace_plot_set_background.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_set_domain_styles.argtypes = [
+    c_int32, c_int32, POINTER(c_int32), POINTER(c_uint8), POINTER(c_double)]
+_dll.openmc_solidraytrace_plot_set_domain_styles.restype = c_int
+_dll.openmc_solidraytrace_plot_set_domain_styles.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_get_alpha.argtypes = [
+    c_int32, c_int32, POINTER(c_double)]
+_dll.openmc_solidraytrace_plot_get_alpha.restype = c_int
+_dll.openmc_solidraytrace_plot_get_alpha.errcheck = _error_handler
+
+_dll.openmc_solidraytrace_plot_render.argtypes = [
+    c_int32, POINTER(c_uint8), POINTER(c_float), POINTER(c_int32),
+    POINTER(c_float), c_int32, c_int32]
+_dll.openmc_solidraytrace_plot_render.restype = c_int
+_dll.openmc_solidraytrace_plot_render.errcheck = _error_handler
+
+
+RayTraceResult = namedtuple('RayTraceResult', ['image', 'depth', 'ids', 'normals'])
+RayTraceResult.__doc__ = """Image and per-pixel data of a solid ray-traced plot
+
+Buffers that were not requested from :meth:`SolidRayTracePlot.render` are None.
+
+Attributes
+----------
+image : numpy.ndarray
+    RGB image as an array of uint8 with shape ``(height, width, 3)``. The first
+    row is the top of the image.
+depth : numpy.ndarray or None
+    Distance from the origin of each pixel's ray to the first visible surface,
+    as an array of float32 with shape ``(height, width)``. The origin is the
+    camera position for a perspective projection and a point on the plane
+    through the camera position for an orthographic projection. Pixels where
+    no visible surface is hit are infinite.
+ids : numpy.ndarray or None
+    ID of the cell or material, depending on the coloring mode, of the first
+    visible surface as an array of int32 with shape ``(height, width)``.
+    Pixels where no visible surface is hit are -1, and pixels whose ray found
+    a region where no cell is defined are -2.
+normals : numpy.ndarray or None
+    Unit normal of the first visible surface, facing the camera, as an array
+    of float32 with shape ``(height, width, 3)``. Pixels where no visible
+    surface is hit are zero.
+"""
+
 
 class SolidRayTracePlot(_FortranObjectWithID):
     """Solid ray-traced plot stored internally.
@@ -471,6 +555,19 @@ class SolidRayTracePlot(_FortranObjectWithID):
         Horizontal field-of-view angle in degrees.
     diffuse_fraction : float
         Fraction of reflected light treated as diffuse (0 to 1).
+    orthographic_width : float or None
+        Width of the view in [cm] for an orthographic projection, or None for
+        a perspective projection. The height of the view follows from the
+        aspect ratio of the image.
+    clip_box : tuple of tuple of float or None
+        Corners ``((xmin, ymin, zmin), (xmax, ymax, zmax))`` of an axis-aligned
+        box outside of which the geometry is cut away. Bounds may be infinite.
+        None means that nothing is cut away.
+    show_cut_faces : bool
+        Whether to draw the faces where the clip box cuts through visible
+        cells or materials.
+    background : tuple of int
+        RGB color of pixels where no visible surface is hit.
     """
 
     COLOR_BY_MATERIAL = 0
@@ -646,6 +743,196 @@ class SolidRayTracePlot(_FortranObjectWithID):
     def diffuse_fraction(self, value):
         _dll.openmc_solidraytrace_plot_set_diffuse_fraction(
             self._index, float(value))
+
+    @property
+    def orthographic_width(self):
+        width = c_double()
+        _dll.openmc_solidraytrace_plot_get_orthographic_width(
+            self._index, width)
+        return width.value if width.value > 0.0 else None
+
+    @orthographic_width.setter
+    def orthographic_width(self, width):
+        if width is None:
+            width = 0.0
+        else:
+            width = float(width)
+            if not np.isfinite(width) or width <= 0.0:
+                raise ValueError('Orthographic width must be a positive, '
+                                 f'finite number, not {width}.')
+        _dll.openmc_solidraytrace_plot_set_orthographic_width(
+            self._index, width)
+
+    @property
+    def clip_box(self):
+        lower_left = (c_double*3)()
+        upper_right = (c_double*3)()
+        _dll.openmc_solidraytrace_plot_get_clip_box(
+            self._index, lower_left, upper_right)
+        lower_left = tuple(lower_left)
+        upper_right = tuple(upper_right)
+        if all(np.isneginf(lower_left)) and all(np.isposinf(upper_right)):
+            return None
+        return (lower_left, upper_right)
+
+    @clip_box.setter
+    def clip_box(self, box):
+        if box is None:
+            lower_left = (-np.inf,)*3
+            upper_right = (np.inf,)*3
+        else:
+            lower_left, upper_right = box
+            lower_left = [float(x) for x in lower_left]
+            upper_right = [float(x) for x in upper_right]
+            if len(lower_left) != 3 or len(upper_right) != 3:
+                raise ValueError('The corners of the clip box must have three '
+                                 'coordinates each.')
+        _dll.openmc_solidraytrace_plot_set_clip_box(
+            self._index, (c_double*3)(*lower_left),
+            (c_double*3)(*upper_right))
+
+    @property
+    def show_cut_faces(self):
+        show = c_bool()
+        _dll.openmc_solidraytrace_plot_get_show_cut_faces(self._index, show)
+        return show.value
+
+    @show_cut_faces.setter
+    def show_cut_faces(self, show):
+        _dll.openmc_solidraytrace_plot_set_show_cut_faces(
+            self._index, bool(show))
+
+    @property
+    def background(self):
+        r = c_uint8()
+        g = c_uint8()
+        b = c_uint8()
+        _dll.openmc_solidraytrace_plot_get_background(self._index, r, g, b)
+        return int(r.value), int(g.value), int(b.value)
+
+    @background.setter
+    def background(self, color):
+        r, g, b = self._check_colors([color])[0]
+        _dll.openmc_solidraytrace_plot_set_background(
+            self._index, int(r), int(g), int(b))
+
+    @staticmethod
+    def _check_colors(colors):
+        colors = np.asarray(colors, dtype=float)
+        if colors.ndim != 2 or colors.shape[1] != 3:
+            raise ValueError('Colors must be given as RGB triplets.')
+        if not np.all((colors >= 0.0) & (colors <= 255.0)):
+            raise ValueError('RGB values must be between 0 and 255.')
+        return np.ascontiguousarray(colors, dtype=np.uint8)
+
+    def set_domain_styles(self, ids, colors=None, alphas=None):
+        """Set the colors and opacities of several cells or materials at once.
+
+        IDs refer to cells or materials depending on :attr:`color_by`. If any
+        ID is invalid, no style is changed.
+
+        Parameters
+        ----------
+        ids : iterable of int
+            IDs of the cells or materials
+        colors : iterable of tuple of int, optional
+            RGB color for each ID. If None, colors are left unchanged.
+        alphas : iterable of float, optional
+            Opacity for each ID. Values of 1 or more are opaque, values between
+            0 and 1 are partially transparent and values of 0 or less hide the
+            domain. If None, opacities and visibility are left unchanged.
+
+        """
+        ids = np.ascontiguousarray(np.asarray(ids, dtype=np.int32).ravel())
+        n = ids.size
+
+        rgb = None
+        if colors is not None:
+            colors = list(colors)
+            rgb = self._check_colors(colors) if colors else \
+                np.zeros((0, 3), dtype=np.uint8)
+            if rgb.shape[0] != n:
+                raise ValueError('The number of colors must match the number '
+                                 'of IDs.')
+
+        alpha = None
+        if alphas is not None:
+            alpha = np.ascontiguousarray(
+                np.asarray(alphas, dtype=np.float64).ravel())
+            if alpha.size != n:
+                raise ValueError('The number of opacities must match the '
+                                 'number of IDs.')
+
+        _dll.openmc_solidraytrace_plot_set_domain_styles(
+            self._index, n, ids.ctypes.data_as(POINTER(c_int32)),
+            None if rgb is None else rgb.ctypes.data_as(POINTER(c_uint8)),
+            None if alpha is None else alpha.ctypes.data_as(POINTER(c_double))
+        )
+
+    def get_alpha(self, domain_id):
+        """Get the opacity of a cell or material.
+
+        Parameters
+        ----------
+        domain_id : int
+            ID of the cell or material, depending on :attr:`color_by`
+
+        Returns
+        -------
+        float
+            Opacity between 0 and 1, where 0 means that the domain is hidden
+
+        """
+        alpha = c_double()
+        _dll.openmc_solidraytrace_plot_get_alpha(
+            self._index, int(domain_id), alpha)
+        return alpha.value
+
+    def render(self, depth=True, ids=True, normals=True):
+        """Render the plot along with optional per-pixel data.
+
+        Unlike :meth:`create_image`, this method updates the view from the
+        camera settings itself.
+
+        Parameters
+        ----------
+        depth : bool
+            Whether to return the distance to the first visible surface
+        ids : bool
+            Whether to return the ID of the first visible cell or material
+        normals : bool
+            Whether to return the normal of the first visible surface
+
+        Returns
+        -------
+        RayTraceResult
+            Image and requested per-pixel data
+
+        """
+        width, height = self.pixels
+        image = np.empty((height, width, 3), dtype=np.uint8)
+        depth_buffer = np.empty((height, width), dtype=np.float32) \
+            if depth else None
+        ids_buffer = np.empty((height, width), dtype=np.int32) \
+            if ids else None
+        normals_buffer = np.empty((height, width, 3), dtype=np.float32) \
+            if normals else None
+
+        def pointer(array, ctype):
+            if array is None:
+                return None
+            return array.ctypes.data_as(POINTER(ctype))
+
+        _dll.openmc_solidraytrace_plot_render(
+            self._index,
+            pointer(image, c_uint8),
+            pointer(depth_buffer, c_float),
+            pointer(ids_buffer, c_int32),
+            pointer(normals_buffer, c_float),
+            width,
+            height
+        )
+        return RayTraceResult(image, depth_buffer, ids_buffer, normals_buffer)
 
     # Backward-compatible setter aliases
     def set_pixels(self, width, height):

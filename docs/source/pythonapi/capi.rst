@@ -88,6 +88,7 @@ Classes
    ParticleFilter
    ParticleProductionFilter
    PolarFilter
+   RayTraceResult
    ReactionFilter
    RectilinearMesh
    RegularMesh
