@@ -832,6 +832,144 @@ Functions
    :return: Return status (negative if an error occurred)
    :rtype: int
 
+.. c:function:: int openmc_solidraytrace_plot_get_orthographic_width(int32_t index, double* width)
+
+   Get the width of the field of view of an orthographic projection.
+
+   :param int32_t index: Index in the plots array
+   :param double* width: Width of the field of view in [cm], or zero if the
+                         plot uses a perspective projection
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_set_orthographic_width(int32_t index, double width)
+
+   Set the width of the field of view of an orthographic projection. The
+   height of the field of view follows from the aspect ratio of the image.
+
+   :param int32_t index: Index in the plots array
+   :param double width: Width of the field of view in [cm]. A value that is not
+                        positive selects a perspective projection.
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_get_clip_box(int32_t index, double* lower_left, double* upper_right)
+
+   Get the axis-aligned box outside of which the geometry is not rendered.
+
+   :param int32_t index: Index in the plots array
+   :param double* lower_left: Lower-left corner of the box in [cm]
+   :param double* upper_right: Upper-right corner of the box in [cm]
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_set_clip_box(int32_t index, const double* lower_left, const double* upper_right)
+
+   Set the axis-aligned box outside of which the geometry is not rendered. The
+   box may extend to infinity, so a single finite bound acts as a cut plane. By
+   default, the box is infinite in all directions.
+
+   :param int32_t index: Index in the plots array
+   :param double* lower_left: Lower-left corner of the box in [cm]
+   :param double* upper_right: Upper-right corner of the box in [cm]
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_get_show_cut_faces(int32_t index, bool* show)
+
+   Get whether faces are drawn where the clip box cuts through visible cells or
+   materials.
+
+   :param int32_t index: Index in the plots array
+   :param bool* show: Whether cut faces are drawn
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_set_show_cut_faces(int32_t index, bool show)
+
+   Set whether faces are drawn where the clip box cuts through visible cells or
+   materials.
+
+   :param int32_t index: Index in the plots array
+   :param bool show: Whether cut faces are drawn
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_get_background(int32_t index, uint8_t* r, uint8_t* g, uint8_t* b)
+
+   Get the color of pixels where no visible surface is hit.
+
+   :param int32_t index: Index in the plots array
+   :param uint8_t* r: Red component
+   :param uint8_t* g: Green component
+   :param uint8_t* b: Blue component
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_set_background(int32_t index, uint8_t r, uint8_t g, uint8_t b)
+
+   Set the color of pixels where no visible surface is hit.
+
+   :param int32_t index: Index in the plots array
+   :param uint8_t r: Red component
+   :param uint8_t g: Green component
+   :param uint8_t b: Blue component
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_set_domain_styles(int32_t index, int32_t n, const int32_t* ids, const uint8_t* rgb, const double* alpha)
+
+   Set the colors and opacities of several cells or materials, depending on
+   the coloring mode of the plot. If any ID is invalid, nothing is changed.
+
+   :param int32_t index: Index in the plots array
+   :param int32_t n: Number of cells or materials
+   :param int32_t* ids: IDs of the cells or materials
+   :param uint8_t* rgb: Colors with three components per domain, or NULL to
+                        keep the current colors
+   :param double* alpha: Opacities, or NULL to keep the current opacities. A
+                         domain with an opacity of zero or less is hidden,
+                         one with an opacity of one or more is opaque, and
+                         others are partially transparent.
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_get_alpha(int32_t index, int32_t id, double* alpha)
+
+   Get the opacity of a cell or material, depending on the coloring mode of
+   the plot.
+
+   :param int32_t index: Index in the plots array
+   :param int32_t id: ID of the cell or material
+   :param double* alpha: Opacity of the domain, which is zero if it is hidden
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
+.. c:function:: int openmc_solidraytrace_plot_render(int32_t index, uint8_t* rgb, float* depth, int32_t* ids, float* normals, int32_t width, int32_t height)
+
+   Update the view and render the plot along with data about the first visible
+   surface hit by the ray of each pixel. All buffers are row-major with the top
+   row of the image first, and any of them may be NULL.
+
+   :param int32_t index: Index in the plots array
+   :param uint8_t* rgb: Output buffer for the colors of shape
+                        ``height*width*3``
+   :param float* depth: Output buffer of shape ``height*width`` for the
+                        distance in [cm] from the origin of the ray to the
+                        first visible surface, or infinity where no visible
+                        surface is hit
+   :param int32_t* ids: Output buffer of shape ``height*width`` for the ID of
+                        the cell or material of the first visible surface,
+                        -1 where no visible surface is hit, or -2 where the ray
+                        passed through a region in which no cell is defined
+   :param float* normals: Output buffer of shape ``height*width*3`` for the unit
+                          normal of the first visible surface, or zero where no
+                          visible surface is hit
+   :param int32_t width: Image width in pixels
+   :param int32_t height: Image height in pixels
+   :return: Return status (negative if an error occurred)
+   :rtype: int
+
 .. c:function:: int openmc_reset()
 
    Resets all tally scores

@@ -109,6 +109,7 @@ int openmc_finalize()
   settings::max_history_splits = 10'000'000;
   settings::max_tracks = 1000;
   settings::max_write_lost_particles = -1;
+  settings::lost_particle_history = 0;
   settings::n_batches = 0;
   settings::n_max_batches = 0;
   settings::n_log_bins = 8000;

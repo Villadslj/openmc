@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <string>
 
+#include "hdf5.h"
+
 #include "openmc/constants.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle_data.h"
@@ -114,7 +116,10 @@ public:
   using GeometryState::mark_as_lost;
 
   //! create a particle restart HDF5 file
-  void write_restart() const;
+  //! \param lost_message Message describing why the particle was lost, or
+  //!   null if it was not lost. For lost particles, the state of the particle
+  //!   and its most recent history are written as well.
+  void write_restart(const char* lost_message = nullptr) const;
 
   //! Update microscopic cross section cache
   //
@@ -125,6 +130,23 @@ public:
   //! \param[in] ncrystal_xs Thermal scattering xs from NCrystal
   void update_neutron_xs(int i_nuclide, int i_grid = C_NONE, int i_sab = C_NONE,
     double sab_frac = 0.0, double ncrystal_xs = -1.0);
+
+private:
+  //! Recent states of a particle history, split into tracks like in track
+  //! files
+  struct RecentHistory {
+    vector<TrackState> states;
+    vector<int> offsets;   //!< Index of the first state of each track
+    vector<int> particles; //!< PDG number of the particle of each track
+  };
+
+  //! Gather the most recent states of the particle history, ending with the
+  //! current state of the particle
+  RecentHistory recent_history() const;
+
+  //! Write the state of a lost particle to a group of its restart file
+  void write_lost_state(
+    hid_t group, const char* message, const RecentHistory& history) const;
 };
 
 //============================================================================

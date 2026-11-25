@@ -117,8 +117,10 @@ extern double
                           //!< total number of particles
 extern int32_t max_write_lost_particles; //!< maximum number of lost particles
                                          //!< to be written to files
-extern int32_t gen_per_batch;            //!< number of generations per batch
-extern int64_t n_particles;              //!< number of particles per generation
+extern int32_t lost_particle_history; //!< number of recent states of a particle
+                                      //!< history written for lost particles
+extern int32_t gen_per_batch;         //!< number of generations per batch
+extern int64_t n_particles;           //!< number of particles per generation
 
 extern int64_t
   max_particles_in_flight;      //!< Max num. event-based particles in flight

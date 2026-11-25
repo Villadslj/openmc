@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <sstream>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "pugixml.hpp"
 
 #include "hdf5.h"
+#include "openmc/array.h"
 #include "openmc/cell.h"
 #include "openmc/constants.h"
 #include "openmc/error.h"
@@ -359,6 +361,15 @@ public:
   const Direction& up() const { return up_; }
   Direction& up() { return up_; }
 
+  //! Width of the view for an orthographic projection. A value of C_NONE
+  //! selects a perspective projection.
+  double orthographic_width() const { return orthographic_width_; }
+  double& orthographic_width() { return orthographic_width_; }
+
+  //! Checks whether the camera parameters define a valid view
+  //! \return Description of the problem, or an empty string if valid
+  std::string check_view() const;
+
   //! brief Updates the cached camera-to-model matrix after changes to
   //! camera parameters.
   void update_view();
@@ -507,17 +518,87 @@ public:
   const double& diffuse_fraction() const { return diffuse_fraction_; }
   double& diffuse_fraction() { return diffuse_fraction_; }
 
+  //! Opacity of each domain, indexed like colors_. Domains without an entry
+  //! are fully opaque.
+  const vector<double>& alphas() const { return alphas_; }
+  vector<double>& alphas() { return alphas_; }
+
+  //! Opacity of the domain with the given index
+  double domain_alpha(int32_t index) const
+  {
+    return index >= 0 && static_cast<size_t>(index) < alphas_.size()
+             ? alphas_[index]
+             : 1.0;
+  }
+
+  //! Color of the domain with the given index
+  RGBColor domain_color(int32_t index) const;
+
+  //! Whether the domain with the given index is drawn
+  bool domain_visible(int32_t index) const
+  {
+    return index >= 0 && opaque_ids_.count(index) > 0 &&
+           domain_alpha(index) > 0.0;
+  }
+
+  //! User ID of the cell or material with the given domain index
+  int32_t domain_id(int32_t index) const;
+
+  //! Corners of the axis-aligned box outside of which geometry is cut away
+  const Position& clip_lower() const { return clip_lower_; }
+  Position& clip_lower() { return clip_lower_; }
+  const Position& clip_upper() const { return clip_upper_; }
+  Position& clip_upper() { return clip_upper_; }
+
+  //! Whether surfaces where the clip box cuts through visible domains are
+  //! drawn
+  bool show_cut_faces() const { return show_cut_faces_; }
+  bool& show_cut_faces() { return show_cut_faces_; }
+
+  //! Intersects a ray with the clip box
+  //! \param[in] r Origin of the ray
+  //! \param[in] u Direction of the ray
+  //! \param[out] t_enter Distance where the ray enters the box, at least 0
+  //! \param[out] t_exit Distance where the ray leaves the box
+  //! \param[out] axis Axis of the face through which the ray enters the box,
+  //!   or -1 if the origin is inside the box
+  //! \return Whether the ray passes through the box
+  bool clip_ray(const Position& r, const Direction& u, double& t_enter,
+    double& t_exit, int& axis) const;
+
+  //! Renders the image along with auxiliary per-pixel data. All buffers are
+  //! row-major with the top row first and may be null.
+  //! \param[out] rgb Colors, 3 values per pixel
+  //! \param[out] depth Distance from the origin of the pixel's ray to the
+  //!   first visible surface, infinite where nothing visible is hit
+  //! \param[out] ids ID of the first visible cell or material, -1 where
+  //!   nothing visible is hit and -2 where the ray found undefined geometry
+  //! \param[out] normals Normal of the first visible surface, 3 values per
+  //!   pixel, zero where nothing visible is hit
+  //! \return Number of rays that found undefined geometry
+  int64_t render(
+    uint8_t* rgb, float* depth, int32_t* ids, float* normals) const;
+
 private:
   void set_opaque_ids(pugi::xml_node node);
   void set_light_position(pugi::xml_node node);
   void set_diffuse_fraction(pugi::xml_node node);
 
+  // Renders the image and counts the rays that found undefined geometry
+  ImageData render_image(int64_t& n_undefined) const;
+
   std::unordered_set<int> opaque_ids_;
+
+  vector<double> alphas_;
 
   double diffuse_fraction_ {0.1};
 
   // By default, the light is at the camera unless otherwise specified.
   Position light_location_;
+
+  Position clip_lower_ {-INFINITY, -INFINITY, -INFINITY};
+  Position clip_upper_ {INFINITY, INFINITY, INFINITY};
+  bool show_cut_faces_ {true};
 };
 
 class ProjectionRay : public Ray {
@@ -545,30 +626,103 @@ private:
 class PhongRay : public Ray {
 public:
   PhongRay(Position r, Direction u, const SolidRayTracePlot& plot)
-    : Ray(r, u), plot_(plot)
-  {
-    result_color_ = plot_.not_found_;
-  }
+    : Ray(r, u), plot_(plot), origin_(r), direction_(u)
+  {}
+
+  //! Traces the ray through the clip box of the plot and shades it
+  void render();
 
   void on_intersection() override;
+  bool on_exit_model() override;
+  void mark_as_lost(const char* message) override;
+  using Ray::mark_as_lost;
 
-  const RGBColor& result_color() { return result_color_; }
+  //! Color of the pixel
+  RGBColor result_color() const;
+
+  //! Distance from the origin of the ray to the first visible surface, or
+  //! infinity if no visible surface was hit
+  double depth() const { return depth_; }
+
+  //! Domain index of the first visible surface, or C_NONE
+  int32_t hit_domain() const { return hit_domain_; }
+
+  //! Normal of the first visible surface, facing the camera
+  const Direction& normal() const { return normal_; }
+
+  //! Whether the ray found undefined geometry before leaving the clip box
+  bool found_undefined() const { return lost() || gap_; }
 
 private:
+  // Index of the material or cell, depending on the color_by setting of the
+  // plot, at the current position
+  int32_t domain_index() const;
+
+  // Whether the camera ray has passed the far side of the clip box
+  bool beyond_clip_box() const
+  {
+    return (r() - origin_).dot(direction_) - TINY_BIT > t_max_;
+  }
+
+  // Normal of the surface that was just crossed, facing against the ray
+  Direction surface_normal();
+
+  // Adds a surface with the given opacity behind what has been composited so
+  // far
+  void composite(const RGBColor& color, double modulation, double alpha);
+
+  // Shades a surface with the given normal at the current position
+  void shade(int32_t domain, const Direction& normal, double t);
+
+  // Handles intersections of the ray that checks for shadows
+  void shadow_intersection();
+
+  // Finishes the shading of an opaque surface once the shadow ray is done
+  void finish_shadow(bool lit);
+
+  // Checks for undefined regions when the ray enters the model from the void
+  void entered_model();
+
   const SolidRayTracePlot& plot_;
 
-  /* After the ray is reflected, it is moving towards the
-   * camera. It does that in order to see if the exposed surface
-   * is shadowed by something else.
-   */
-  bool reflected_ {false};
+  // Origin and direction of the camera ray, used to measure depth
+  Position origin_;
+  Direction direction_;
 
-  // Have to record the first hit ID, so that if the region
-  // does get shadowed, we recall what its color should be
-  // when tracing from the surface to the light.
-  int orig_hit_id_ {-1};
+  // Distance along the camera ray at which it leaves the clip box
+  double t_max_ {INFINITY};
 
-  RGBColor result_color_;
+  // Composited color and opacity, accumulated from front to back
+  array<double, 3> color_ {0.0, 0.0, 0.0};
+  double opacity_ {0.0};
+
+  // Domain the ray is currently in. Boundaries between cells of the same
+  // domain are not drawn.
+  int32_t current_domain_ {C_NONE};
+
+  // Data of the first visible surface
+  double depth_ {INFINITY};
+  int32_t hit_domain_ {C_NONE};
+  Direction normal_ {0.0, 0.0, 0.0};
+
+  // State used to detect undefined regions which are enclosed by the model.
+  // A ray that leaves the model through a surface without a boundary
+  // condition and enters it again through such a surface has passed through
+  // a region where particles would get lost.
+  bool in_void_ {false};
+  bool exited_open_ {false};
+  bool start_in_void_ {false};
+  Position start_;
+  bool gap_ {false};
+
+  // State of the ray that checks whether an opaque surface is shadowed. The
+  // ray is pointed from the surface to the light and stops at the first
+  // opaque surface, at the light, or where it leaves the clip box.
+  bool shadow_ {false};
+  Position shadow_origin_;
+  double shadow_t_max_ {INFINITY};
+  RGBColor pending_color_;
+  double pending_modulation_ {1.0};
 };
 
 //===============================================================================

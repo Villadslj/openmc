@@ -363,6 +363,22 @@ based on the recommended value in LA-UR-14-24530_.
 
 .. _LA-UR-14-24530: https://mcnp.lanl.gov/pdf_files/TechReport_2014_LANL_LA-UR-14-24530_Brown.pdf
 
+.. _lost_particle_history:
+
+-----------------------------------
+``<lost_particle_history>`` Element
+-----------------------------------
+
+The ``<lost_particle_history>`` element indicates the number of the most recent
+states of a particle history that are written to the :ref:`particle restart
+file <io_particle_restart>` of a lost particle. A state is recorded at the start
+of each flight of a particle. Each particle in flight stores this many states of
+about 100 bytes, which can take a significant amount of memory in event-based
+mode, where the number of particles in flight is set by the
+``<max_particles_in_flight>`` element. The value must be between 0 and 10000.
+
+  *Default*: 0 (no history is recorded)
+
 ---------------------------
 ``<material_cell_offsets>``
 ---------------------------

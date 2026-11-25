@@ -30,6 +30,10 @@ class RunMode(Enum):
 
 _RES_SCAT_METHODS = {'dbrc', 'rvs'}
 
+# Maximum value of Settings.lost_particle_history, which matches
+# MAX_LOST_PARTICLE_HISTORY in include/openmc/constants.h
+_MAX_LOST_PARTICLE_HISTORY = 10000
+
 
 class Settings:
     """Settings used for an OpenMC simulation.
@@ -136,6 +140,16 @@ class Settings:
         relative error used.
     log_grid_bins : int
         Number of bins for logarithmic energy grid search
+    lost_particle_history : int
+        Number of the most recent states of a particle history that are
+        written to the particle restart file of a lost particle. A state is
+        recorded whenever a particle starts a new flight, i.e. at its birth and
+        after each surface crossing or collision. Every particle in flight
+        stores this many states of about 100 bytes, which can take significant
+        memory in event-based mode. A value of 0, the default, disables the
+        history.
+
+        .. versionadded:: 0.16.1
     material_cell_offsets : bool
         Generate an "offset table" for material cells by default. These tables
         are necessary when a particular instance of a cell needs to be tallied.
@@ -419,6 +433,7 @@ class Settings:
         self._max_lost_particles = None
         self._rel_max_lost_particles = None
         self._max_write_lost_particles = None
+        self._lost_particle_history = None
         self._particles = None
         self._keff_trigger = None
 
@@ -601,6 +616,22 @@ class Settings:
         cv.check_greater_than('max_write_lost_particles',
                               max_write_lost_particles, 0)
         self._max_write_lost_particles = max_write_lost_particles
+
+    @property
+    def lost_particle_history(self) -> int:
+        return self._lost_particle_history
+
+    @lost_particle_history.setter
+    def lost_particle_history(self, lost_particle_history: int | None):
+        if lost_particle_history is not None:
+            cv.check_type('lost_particle_history', lost_particle_history,
+                          Integral)
+            cv.check_greater_than('lost_particle_history',
+                                  lost_particle_history, 0, equality=True)
+            cv.check_less_than('lost_particle_history',
+                               lost_particle_history,
+                               _MAX_LOST_PARTICLE_HISTORY, equality=True)
+        self._lost_particle_history = lost_particle_history
 
     @property
     def particles(self) -> int:
@@ -1547,6 +1578,11 @@ class Settings:
             element = ET.SubElement(root, "max_write_lost_particles")
             element.text = str(self._max_write_lost_particles)
 
+    def _create_lost_particle_history_subelement(self, root):
+        if self._lost_particle_history is not None:
+            element = ET.SubElement(root, "lost_particle_history")
+            element.text = str(self._lost_particle_history)
+
     def _create_particles_subelement(self, root):
         if self._particles is not None:
             element = ET.SubElement(root, "particles")
@@ -2131,6 +2167,11 @@ class Settings:
         if text is not None:
             self.max_write_lost_particles = int(text)
 
+    def _lost_particle_history_from_xml_element(self, root):
+        text = get_text(root, 'lost_particle_history')
+        if text is not None:
+            self.lost_particle_history = int(text)
+
     def _generations_per_batch_from_xml_element(self, root):
         text = get_text(root, 'generations_per_batch')
         if text is not None:
@@ -2604,6 +2645,7 @@ class Settings:
         self._create_max_lost_particles_subelement(element)
         self._create_rel_max_lost_particles_subelement(element)
         self._create_max_write_lost_particles_subelement(element)
+        self._create_lost_particle_history_subelement(element)
         self._create_generations_per_batch_subelement(element)
         self._create_keff_trigger_subelement(element)
         self._create_source_subelement(element, mesh_memo)
@@ -2722,6 +2764,7 @@ class Settings:
         settings._max_lost_particles_from_xml_element(elem)
         settings._rel_max_lost_particles_from_xml_element(elem)
         settings._max_write_lost_particles_from_xml_element(elem)
+        settings._lost_particle_history_from_xml_element(elem)
         settings._generations_per_batch_from_xml_element(elem)
         settings._keff_trigger_from_xml_element(elem)
         settings._source_from_xml_element(elem, meshes)

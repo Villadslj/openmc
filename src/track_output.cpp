@@ -40,6 +40,30 @@ void write_particle_track(Particle& p)
   p.tracks().back().states.push_back(p.get_track_state());
 }
 
+hid_t create_track_state_type()
+{
+  // Create compound type for Position
+  hid_t postype = H5Tcreate(H5T_COMPOUND, sizeof(struct Position));
+  H5Tinsert(postype, "x", HOFFSET(Position, x), H5T_NATIVE_DOUBLE);
+  H5Tinsert(postype, "y", HOFFSET(Position, y), H5T_NATIVE_DOUBLE);
+  H5Tinsert(postype, "z", HOFFSET(Position, z), H5T_NATIVE_DOUBLE);
+
+  // Create compound type for TrackState
+  hid_t dtype = H5Tcreate(H5T_COMPOUND, sizeof(struct TrackState));
+  H5Tinsert(dtype, "r", HOFFSET(TrackState, r), postype);
+  H5Tinsert(dtype, "u", HOFFSET(TrackState, u), postype);
+  H5Tinsert(dtype, "E", HOFFSET(TrackState, E), H5T_NATIVE_DOUBLE);
+  H5Tinsert(dtype, "time", HOFFSET(TrackState, time), H5T_NATIVE_DOUBLE);
+  H5Tinsert(dtype, "wgt", HOFFSET(TrackState, wgt), H5T_NATIVE_DOUBLE);
+  H5Tinsert(dtype, "cell_id", HOFFSET(TrackState, cell_id), H5T_NATIVE_INT);
+  H5Tinsert(
+    dtype, "cell_instance", HOFFSET(TrackState, cell_instance), H5T_NATIVE_INT);
+  H5Tinsert(
+    dtype, "material_id", HOFFSET(TrackState, material_id), H5T_NATIVE_INT);
+  H5Tclose(postype);
+  return dtype;
+}
+
 void open_track_file()
 {
   // Open file and write filetype/version -- when MPI is enabled and there is
@@ -58,26 +82,7 @@ void open_track_file()
   write_attribute(track_file, "filetype", "track");
   write_attribute(track_file, "version", VERSION_TRACK);
 
-  // Create compound type for Position
-  hid_t postype = H5Tcreate(H5T_COMPOUND, sizeof(struct Position));
-  H5Tinsert(postype, "x", HOFFSET(Position, x), H5T_NATIVE_DOUBLE);
-  H5Tinsert(postype, "y", HOFFSET(Position, y), H5T_NATIVE_DOUBLE);
-  H5Tinsert(postype, "z", HOFFSET(Position, z), H5T_NATIVE_DOUBLE);
-
-  // Create compound type for TrackState
-  track_dtype = H5Tcreate(H5T_COMPOUND, sizeof(struct TrackState));
-  H5Tinsert(track_dtype, "r", HOFFSET(TrackState, r), postype);
-  H5Tinsert(track_dtype, "u", HOFFSET(TrackState, u), postype);
-  H5Tinsert(track_dtype, "E", HOFFSET(TrackState, E), H5T_NATIVE_DOUBLE);
-  H5Tinsert(track_dtype, "time", HOFFSET(TrackState, time), H5T_NATIVE_DOUBLE);
-  H5Tinsert(track_dtype, "wgt", HOFFSET(TrackState, wgt), H5T_NATIVE_DOUBLE);
-  H5Tinsert(
-    track_dtype, "cell_id", HOFFSET(TrackState, cell_id), H5T_NATIVE_INT);
-  H5Tinsert(track_dtype, "cell_instance", HOFFSET(TrackState, cell_instance),
-    H5T_NATIVE_INT);
-  H5Tinsert(track_dtype, "material_id", HOFFSET(TrackState, material_id),
-    H5T_NATIVE_INT);
-  H5Tclose(postype);
+  track_dtype = create_track_state_type();
 }
 
 void close_track_file()

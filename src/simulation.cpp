@@ -728,6 +728,9 @@ void initialize_particle_track(
   // Initialize track counter (1 for this primary/secondary track)
   p.n_tracks() = 1;
 
+  // Clear the recent states that are written if the particle gets lost
+  p.reset_recent_states();
+
   // Reset split counter
   p.n_split() = 0;
 

@@ -143,9 +143,10 @@ appealing plots of simulation geometries can be created.
 
 Solid ray-traced plots use the same ray tracing functions that neutrons and
 photons do in OpenMC, so any input that does not leak particles can be
-visualized in 3D using a solid ray-traced plot. That being said, these plots are
-not useful for detecting overlap or undefined regions, so it is recommended to
-use the slice plot approach for geometry debugging.
+visualized in 3D using a solid ray-traced plot. Rays that pass through regions
+where no cell is defined are counted and reported in a warning. That being said,
+these plots are not useful for locating overlaps or undefined regions, so it is
+recommended to use the slice plot approach for geometry debugging.
 
 Only a few inputs are required for a solid ray-traced plot. The camera location,
 where the camera is looking, and a set of opaque material or cell IDs are
@@ -170,6 +171,32 @@ A minimal solid ray-traced plot input could be::
 
 These plots are then stored into a :class:`openmc.Plots` instance, just like the
 slice plots.
+
+Solid ray-traced plots can also be rendered interactively with
+:class:`openmc.lib.SolidRayTracePlot` after OpenMC has been initialized with
+:func:`openmc.lib.init`. Besides the settings above, it supports partially
+transparent cells or materials, an axis-aligned box that cuts the geometry open,
+an orthographic projection, and a background color. Its
+:meth:`~openmc.lib.SolidRayTracePlot.render` method returns, along with the
+image, the distance to the first visible surface, its cell or material ID, and
+its normal for each pixel::
+
+  import numpy as np
+  import openmc.lib
+
+  openmc.lib.init()
+  plot = openmc.lib.SolidRayTracePlot()
+  plot.pixels = (400, 300)
+  plot.camera_position = (100.0, 0.0, 0.0)
+  plot.look_at = (0.0, 0.0, 0.0)
+  plot.color_by = openmc.lib.SolidRayTracePlot.COLOR_BY_CELL
+  plot.set_default_colors()
+  plot.set_all_opaque()
+
+  # Cut away the geometry above z = 0 and make cell 2 partially transparent
+  plot.clip_box = ((-np.inf, -np.inf, -np.inf), (np.inf, np.inf, 0.0))
+  plot.set_domain_styles([2], alphas=[0.3])
+  image, depth, ids, normals = plot.render()
 
 ---------------
 Wireframe Plots

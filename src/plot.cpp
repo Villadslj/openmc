@@ -1196,16 +1196,37 @@ RayTracePlot::RayTracePlot(pugi::xml_node node) : PlottableInterface(node)
                 "parameters.");
 }
 
+std::string RayTracePlot::check_view() const
+{
+  Direction looking_direction = look_at_ - camera_position_;
+  double distance = looking_direction.norm();
+  if (!(distance > 0.0) || !std::isfinite(distance)) {
+    return "The camera position and look_at point must be distinct, finite "
+           "points.";
+  }
+  double up_norm = up_.norm();
+  if (!(up_norm > 0.0) || !std::isfinite(up_norm)) {
+    return "The up vector must be finite and nonzero.";
+  }
+  if (std::abs(looking_direction.dot(up_)) / (distance * up_norm) >
+      1.0 - 1e-9) {
+    return "Up vector cannot align with vector between camera position and "
+           "look_at!";
+  }
+  return {};
+}
+
 void RayTracePlot::update_view()
 {
+  std::string problem = check_view();
+  if (!problem.empty())
+    fatal_error(problem);
+
   // Get centerline vector for camera-to-model. We create vectors around this
   // that form a pixel array, and then trace rays along that.
   auto up = up_ / up_.norm();
   Direction looking_direction = look_at_ - camera_position_;
   looking_direction /= looking_direction.norm();
-  if (std::abs(std::abs(looking_direction.dot(up)) - 1.0) < 1e-9)
-    fatal_error("Up vector cannot align with vector between camera position "
-                "and look_at!");
   Direction cam_yaxis = looking_direction.cross(up);
   cam_yaxis /= cam_yaxis.norm();
   Direction cam_zaxis = cam_yaxis.cross(looking_direction);
@@ -1351,13 +1372,15 @@ std::pair<Position, Direction> RayTracePlot::get_pixel_ray(
     result.first = camera_position_;
     result.second = camera_local_vec.rotate(camera_to_model_);
   } else { // orthographic projection
+    // Pixels are square, so the height of the view follows from its width
+    // and the aspect ratio of the image. Like for perspective projections,
+    // the first row of the image is at the top of the view.
+    double pixel_width = orthographic_width_ / p0;
+    double x_pix_coord = (static_cast<double>(horiz) - 0.5 * p0) * pixel_width;
+    double y_pix_coord = (0.5 * p1 - static_cast<double>(vert)) * pixel_width;
 
-    double x_pix_coord = (static_cast<double>(horiz) - p0 / 2.0) / p0;
-    double y_pix_coord = (static_cast<double>(vert) - p1 / 2.0) / p1;
-
-    result.first = camera_position_ +
-                   camera_y_axis() * x_pix_coord * orthographic_width_ +
-                   camera_z_axis() * y_pix_coord * orthographic_width_;
+    result.first = camera_position_ + camera_y_axis() * x_pix_coord +
+                   camera_z_axis() * y_pix_coord;
     result.second = camera_x_axis();
   }
 
@@ -1397,7 +1420,10 @@ ImageData WireframeRayTracePlot::create_image() const
   // The last thread writes to this, and the first thread reads from it.
   std::vector<std::vector<TrackSegment>> old_segments(pixels()[0]);
 
-#pragma omp parallel
+  // Number of rays that passed through regions where no cell is defined
+  int64_t n_lost = 0;
+
+#pragma omp parallel reduction(+ : n_lost)
   {
     const int n_threads = num_threads();
     const int tid = thread_num();
@@ -1424,6 +1450,8 @@ ImageData WireframeRayTracePlot::create_image() const
             ru.first, ru.second, *this, this_line_segments[tid][horiz]);
 
           ray.trace();
+          if (ray.lost())
+            ++n_lost;
 
           // Now color the pixel based on what we have intersected...
           // Loops backwards over intersections.
@@ -1501,6 +1529,13 @@ ImageData WireframeRayTracePlot::create_image() const
       vert += n_threads;
     }
   } // end omp parallel
+
+  if (n_lost > 0) {
+    warning(fmt::format("{} of {} rays in plot {} passed through regions where "
+                        "no cell is defined. Particles would be lost in these "
+                        "regions.",
+      n_lost, static_cast<int64_t>(pixels()[0]) * pixels()[1], id()));
+  }
 
   // Now thicken the wireframe lines and apply them to our image
   for (int vert = 0; vert < pixels()[1]; ++vert) {
@@ -1678,29 +1713,131 @@ void SolidRayTracePlot::print_info() const
   RayTracePlot::print_info();
 }
 
-ImageData SolidRayTracePlot::create_image() const
+RGBColor SolidRayTracePlot::domain_color(int32_t index) const
 {
-  size_t width = pixels()[0];
-  size_t height = pixels()[1];
-  ImageData data({width, height}, not_found_);
+  if (index >= 0 && static_cast<size_t>(index) < colors_.size())
+    return colors_[index];
+  return {128, 128, 128};
+}
 
-#pragma omp parallel for schedule(dynamic) collapse(2)
-  for (int horiz = 0; horiz < pixels()[0]; ++horiz) {
-    for (int vert = 0; vert < pixels()[1]; ++vert) {
+int32_t SolidRayTracePlot::domain_id(int32_t index) const
+{
+  if (index < 0)
+    return C_NONE;
+  if (color_by_ == PlotColorBy::mats) {
+    return static_cast<size_t>(index) < model::materials.size()
+             ? model::materials[index]->id()
+             : C_NONE;
+  }
+  return static_cast<size_t>(index) < model::cells.size()
+           ? model::cells[index]->id_
+           : C_NONE;
+}
+
+bool SolidRayTracePlot::clip_ray(const Position& r, const Direction& u,
+  double& t_enter, double& t_exit, int& axis) const
+{
+  // Intersect the ray with the three slabs that make up the clip box
+  t_enter = 0.0;
+  t_exit = INFINITY;
+  axis = -1;
+  for (int i = 0; i < 3; ++i) {
+    if (u[i] == 0.0) {
+      if (r[i] < clip_lower_[i] || r[i] > clip_upper_[i])
+        return false;
+      continue;
+    }
+    double t_lower = (clip_lower_[i] - r[i]) / u[i];
+    double t_upper = (clip_upper_[i] - r[i]) / u[i];
+    double t_near = std::min(t_lower, t_upper);
+    double t_far = std::max(t_lower, t_upper);
+    if (t_near > t_enter) {
+      t_enter = t_near;
+      axis = i;
+    }
+    t_exit = std::min(t_exit, t_far);
+  }
+  return t_enter <= t_exit;
+}
+
+int64_t SolidRayTracePlot::render(
+  uint8_t* rgb, float* depth, int32_t* ids, float* normals) const
+{
+  int width = pixels()[0];
+  int height = pixels()[1];
+  int64_t n_undefined = 0;
+
+#pragma omp parallel for schedule(dynamic) collapse(2)                         \
+  reduction(+ : n_undefined)
+  for (int vert = 0; vert < height; ++vert) {
+    for (int horiz = 0; horiz < width; ++horiz) {
       // RayTracePlot implements camera ray generation
       std::pair<Position, Direction> ru = get_pixel_ray(horiz, vert);
       PhongRay ray(ru.first, ru.second, *this);
-      ray.trace();
-      data(horiz, vert) = ray.result_color();
+      ray.render();
+
+      int64_t i = static_cast<int64_t>(vert) * width + horiz;
+      if (rgb) {
+        RGBColor color = ray.result_color();
+        rgb[3 * i] = color.red;
+        rgb[3 * i + 1] = color.green;
+        rgb[3 * i + 2] = color.blue;
+      }
+      if (depth)
+        depth[i] = static_cast<float>(ray.depth());
+      if (ids) {
+        if (ray.found_undefined()) {
+          ids[i] = -2;
+        } else {
+          ids[i] = domain_id(ray.hit_domain());
+        }
+      }
+      if (normals) {
+        normals[3 * i] = static_cast<float>(ray.normal().x);
+        normals[3 * i + 1] = static_cast<float>(ray.normal().y);
+        normals[3 * i + 2] = static_cast<float>(ray.normal().z);
+      }
+      if (ray.found_undefined())
+        ++n_undefined;
     }
   }
 
+  return n_undefined;
+}
+
+ImageData SolidRayTracePlot::create_image() const
+{
+  int64_t n_undefined;
+  return render_image(n_undefined);
+}
+
+ImageData SolidRayTracePlot::render_image(int64_t& n_undefined) const
+{
+  size_t width = pixels()[0];
+  size_t height = pixels()[1];
+  vector<uint8_t> rgb(3 * width * height);
+  n_undefined = render(rgb.data(), nullptr, nullptr, nullptr);
+
+  ImageData data({width, height}, not_found_);
+  for (size_t vert = 0; vert < height; ++vert) {
+    for (size_t horiz = 0; horiz < width; ++horiz) {
+      size_t i = 3 * (vert * width + horiz);
+      data(horiz, vert) = RGBColor(rgb[i], rgb[i + 1], rgb[i + 2]);
+    }
+  }
   return data;
 }
 
 void SolidRayTracePlot::create_output() const
 {
-  ImageData data = create_image();
+  int64_t n_undefined;
+  ImageData data = render_image(n_undefined);
+  if (n_undefined > 0) {
+    warning(fmt::format(
+      "{} of {} rays in plot {} passed through regions where no cell is "
+      "defined. Particles would be lost in these regions.",
+      n_undefined, static_cast<int64_t>(pixels()[0]) * pixels()[1], id()));
+  }
   write_image(data);
 }
 
@@ -1760,132 +1897,402 @@ void ProjectionRay::on_intersection()
     traversal_distance_, boundary().surface_index());
 }
 
+namespace {
+
+// Whether the surface with the given signed index has a boundary condition
+bool has_boundary_condition(int surface_token)
+{
+  if (surface_token == SURFACE_NONE)
+    return false;
+  size_t i_surf = std::abs(surface_token) - 1;
+  if (i_surf >= model::surfaces.size())
+    return false;
+  return static_cast<bool>(model::surfaces[i_surf]->bc_);
+}
+
+// Ray that records the surface through which it first enters the model
+class EntryProbeRay : public Ray {
+public:
+  EntryProbeRay(Position r, Direction u) : Ray(r, u) {}
+
+  void on_intersection() override
+  {
+    entry_surface_ = surface();
+    stop();
+  }
+
+  int entry_surface() const { return entry_surface_; }
+
+private:
+  int entry_surface_ {SURFACE_NONE};
+};
+
+} // namespace
+
+void PhongRay::render()
+{
+  double t_enter, t_exit;
+  int axis;
+  if (!plot_.clip_ray(origin_, direction_, t_enter, t_exit, axis))
+    return;
+  t_max_ = t_exit;
+
+  // Start the ray where it enters the clip box
+  start_ = origin_;
+  if (t_enter > 0.0) {
+    start_ = origin_ + t_enter * direction_;
+    init_from_r_u(start_, direction_);
+  }
+
+  inside_cell_ = exhaustive_find_cell(*this, settings::verbosity >= 10);
+  if (stopped())
+    return;
+
+  if (inside_cell_) {
+    current_domain_ = domain_index();
+
+    // Draw the face where the clip box cuts through a visible domain
+    if (axis >= 0 && plot_.show_cut_faces() &&
+        plot_.domain_visible(current_domain_)) {
+      Direction normal {0.0, 0.0, 0.0};
+      normal[axis] = direction_[axis] > 0.0 ? -1.0 : 1.0;
+      if (hit_domain_ == C_NONE) {
+        depth_ = t_enter;
+        hit_domain_ = current_domain_;
+        normal_ = normal;
+      }
+
+      // The light cannot be blocked on its way to the face, because the
+      // geometry in front of the face is cut away.
+      Direction to_light = plot_.light_location_ - start_;
+      double light_distance = to_light.norm();
+      double cos_light =
+        light_distance > 0.0
+          ? std::max(0.0, normal.dot(to_light) / light_distance)
+          : 1.0;
+      double modulation =
+        plot_.diffuse_fraction_ + (1.0 - plot_.diffuse_fraction_) * cos_light;
+      composite(plot_.domain_color(current_domain_), modulation,
+        plot_.domain_alpha(current_domain_));
+      if (opacity_ >= 1.0 - 1e-6)
+        return;
+    }
+  } else if (n_coord() > 1) {
+    Ray::mark_as_lost(fmt::format(
+      "Could not locate a ray inside the model, r = {}, u = {}", r(), u()));
+    return;
+  } else {
+    in_void_ = true;
+    start_in_void_ = t_enter > 0.0;
+  }
+
+  trace();
+
+  // The shadow ray reached neither an opaque surface nor the light, for
+  // example because it ended up in a cell that extends to infinity
+  if (shadow_)
+    finish_shadow(true);
+}
+
+RGBColor PhongRay::result_color() const
+{
+  // Whatever the composited surfaces do not cover shows the background, or
+  // the overlap color if the ray found undefined geometry
+  const RGBColor& fill = lost() ? plot_.overlap_color_ : plot_.not_found_;
+  double remaining = 1.0 - opacity_;
+  auto channel = [remaining](double value, uint8_t fill_value) {
+    return static_cast<uint8_t>(
+      std::clamp(value + remaining * fill_value, 0.0, 255.0));
+  };
+  return {channel(color_[0], fill.red), channel(color_[1], fill.green),
+    channel(color_[2], fill.blue)};
+}
+
+int32_t PhongRay::domain_index() const
+{
+  return plot_.color_by_ == PlottableInterface::PlotColorBy::mats
+           ? material()
+           : lowest_coord().cell();
+}
+
+Direction PhongRay::surface_normal()
+{
+  // A lattice boundary has no surface, so the normal is unknown there
+  size_t i_surf = std::abs(surface()) - 1;
+  if (surface() == SURFACE_NONE || i_surf >= model::surfaces.size())
+    return -u();
+  const auto& surf = model::surfaces[i_surf];
+
+  // The crossed surface may be on a higher coordinate level than the
+  // innermost local coordinates, so we check the surface's coordinate level
+  // to find the appropriate coordinate level to use for the normal
+  // calculation
+  int surf_level = boundary().coord_level() - 1;
+  // ensure surface level is within bounds of current coordinate stack
+  surf_level = std::clamp(surf_level, 0, n_coord() - 1);
+
+  // The ray has been advanced slightly past the boundary. Use an
+  // approximation to the actual hit point for stable normal/lighting.
+  Position r_hit_level =
+    coord(surf_level).r() - TINY_BIT * coord(surf_level).u();
+  Direction normal = surf->normal(r_hit_level);
+  double norm = normal.norm();
+  if (!(norm > 0.0) || !std::isfinite(norm))
+    return -u();
+  normal /= norm;
+
+  // Need to apply rotations to find the normal vector in
+  // the base level universe's coordinate system.
+  for (int lev = surf_level - 1; lev >= 0; --lev) {
+    if (coord(lev + 1).rotated()) {
+      const Cell& c {*model::cells[coord(lev).cell()]};
+      normal = normal.inverse_rotate(c.rotation_);
+    }
+  }
+
+  // use the normal opposed to the ray direction
+  if (normal.dot(u()) > 0.0) {
+    normal *= -1.0;
+  }
+  return normal;
+}
+
+void PhongRay::composite(const RGBColor& color, double modulation, double alpha)
+{
+  // Front-to-back compositing: the surface covers the given fraction of what
+  // is still visible through the surfaces in front of it
+  double weight = (1.0 - opacity_) * alpha;
+  color_[0] += weight * color.red * modulation;
+  color_[1] += weight * color.green * modulation;
+  color_[2] += weight * color.blue * modulation;
+  opacity_ += weight;
+}
+
 void PhongRay::on_intersection()
 {
-  // Check if we hit an opaque material or cell
-  int hit_id = plot_.color_by_ == PlottableInterface::PlotColorBy::mats
-                 ? material()
-                 : lowest_coord().cell();
+  if (shadow_) {
+    shadow_intersection();
+    return;
+  }
 
-  // If we are reflected and have advanced beyond the camera,
-  // the ray is done. This is checked here because we should
-  // kill the ray even if the material is not opaque.
-  if (reflected_ && (r() - plot_.camera_position()).dot(u()) >= 0.0) {
+  // Geometry beyond the far side of the clip box is cut away
+  if (beyond_clip_box()) {
+    stop();
+    return;
+  }
+  double t = (r() - origin_).dot(direction_) - TINY_BIT;
+
+  // The cell and material are not known after leaving the model
+  if (!inside_cell_)
+    return;
+
+  if (in_void_)
+    entered_model();
+
+  // Boundaries between cells of the same domain are not drawn
+  int32_t domain = domain_index();
+  if (domain == current_domain_)
+    return;
+  current_domain_ = domain;
+
+  // Anything that's not visible has zero impact on the plot.
+  if (!plot_.domain_visible(domain))
+    return;
+
+  shade(domain, surface_normal(), t);
+}
+
+void PhongRay::shade(int32_t domain, const Direction& normal, double t)
+{
+  if (hit_domain_ == C_NONE) {
+    depth_ = t;
+    hit_domain_ = domain;
+    normal_ = normal;
+  }
+
+  // The ray has been advanced slightly past the boundary. Use an
+  // approximation to the actual hit point for stable normal/lighting.
+  Position r_hit = r() - TINY_BIT * u();
+  Direction to_light = plot_.light_location_ - r_hit;
+  double light_distance = to_light.norm();
+  if (light_distance > 0.0) {
+    to_light /= light_distance;
+  } else {
+    to_light = -u();
+  }
+
+  // Facing away from the light means no lighting
+  double dotprod = normal.dot(to_light);
+  dotprod = std::max(0.0, dotprod);
+
+  RGBColor color = plot_.domain_color(domain);
+  double modulation =
+    plot_.diffuse_fraction_ + (1.0 - plot_.diffuse_fraction_) * dotprod;
+
+  // Transparent surfaces neither receive nor cast shadows
+  double alpha = plot_.domain_alpha(domain);
+  if (alpha < 1.0) {
+    composite(color, modulation, alpha);
+    if (opacity_ >= 1.0 - 1e-6)
+      stop();
+    return;
+  }
+
+  if (dotprod <= 0.0) {
+    composite(color, plot_.diffuse_fraction_, 1.0);
     stop();
     return;
   }
 
-  // Anything that's not opaque has zero impact on the plot.
-  if (plot_.opaque_ids_.find(hit_id) == plot_.opaque_ids_.end())
+  // Check whether the surface is shadowed by tracing a ray from it to the
+  // light. The ray stops at the light or where it leaves the clip box,
+  // because geometry outside of the box has been cut away.
+  double t_enter, t_exit;
+  int axis;
+  if (!plot_.clip_ray(r_hit, to_light, t_enter, t_exit, axis)) {
+    composite(color, modulation, 1.0);
+    stop();
+    return;
+  }
+  shadow_ = true;
+  shadow_origin_ = r_hit;
+  shadow_t_max_ = std::min(light_distance, t_exit);
+  pending_color_ = color;
+  pending_modulation_ = modulation;
+
+  // Now point the ray to the light. We now begin checking to see if it's
+  // occluded by another surface
+  size_t i_surf = std::abs(surface()) - 1;
+  bool on_dagmc_surface =
+    surface() != SURFACE_NONE && i_surf < model::surfaces.size() &&
+    model::surfaces[i_surf]->geom_type() == GeometryType::DAG;
+  u() = to_light;
+
+  // OpenMC native CSG and DAGMC surfaces have some slight differences
+  // in how they interpret particles that are sitting on a surface.
+  // I don't know exactly why, but this makes everything work beautifully.
+  if (on_dagmc_surface) {
+    surface() = SURFACE_NONE;
+  } else {
+    surface() = -surface(); // go to other side
+  }
+
+  // Must fully restart coordinate search. Why? Not sure.
+  clear();
+
+  // Note this could likely be faster if we cached the previous
+  // cell we were in before the reflection. This is the easiest
+  // way to fully initialize all the sub-universe coordinates and
+  // directions though.
+  inside_cell_ = exhaustive_find_cell(*this, settings::verbosity >= 10);
+  if (stopped())
+    return;
+  if (!inside_cell_) {
+    // The light is outside of the model
+    finish_shadow(true);
+    return;
+  }
+  current_domain_ = domain_index();
+
+  // Must recalculate distance to boundary due to the
+  // direction change
+  compute_distance();
+}
+
+void PhongRay::shadow_intersection()
+{
+  // Nothing beyond the light or outside of the clip box casts a shadow
+  double t = (r() - shadow_origin_).dot(u()) - TINY_BIT;
+  if (t >= shadow_t_max_) {
+    finish_shadow(true);
+    return;
+  }
+
+  if (!inside_cell_)
     return;
 
-  if (!reflected_) {
-    // reflect the particle and set the color to be colored by
-    // the normal or the diffuse lighting contribution
-    reflected_ = true;
-    result_color_ = plot_.colors_[hit_id];
-    // The ray has been advanced slightly past the boundary. Use an
-    // approximation to the actual hit point for stable normal/lighting.
-    Position r_hit = r() - TINY_BIT * u();
-    Direction to_light = plot_.light_location_ - r_hit;
-    to_light /= to_light.norm();
+  int32_t domain = domain_index();
+  if (domain == current_domain_)
+    return;
+  current_domain_ = domain;
 
-    // TODO
-    // Not sure what can cause a surface token to be invalid here, although it
-    // sometimes happens for a few pixels. It's very very rare, so proceed by
-    // coloring the pixel with the overlap color. It seems to happen only for a
-    // few pixels on the outer boundary of a hex lattice.
-    //
-    // We cannot detect it in the outer loop, and it only matters here, so
-    // that's why the error handling is a little different than for a lost
-    // ray.
-    if (surface() == 0) {
-      result_color_ = plot_.overlap_color_;
-      stop();
-      return;
-    }
+  if (plot_.domain_visible(domain) && plot_.domain_alpha(domain) >= 1.0)
+    finish_shadow(false);
+}
 
-    // Get surface pointer
-    const auto& surf = model::surfaces.at(surface_index());
+void PhongRay::finish_shadow(bool lit)
+{
+  shadow_ = false;
+  composite(
+    pending_color_, lit ? pending_modulation_ : plot_.diffuse_fraction_, 1.0);
+  stop();
+}
 
-    // The crossed surface may be on a higher coordinate level than the
-    // innermost local coordinates, so we check the surface's coordinate level
-    // to find the appropriate coordinate level to use for the normal
-    // calculation
-    int surf_level = boundary().coord_level() - 1;
-    // ensure surface level is within bounds of current coordinate stack
-    surf_level = std::clamp(surf_level, 0, n_coord() - 1);
+bool PhongRay::on_exit_model()
+{
+  if (shadow_) {
+    finish_shadow(true);
+    return false;
+  }
 
-    Position r_hit_level =
-      coord(surf_level).r() - TINY_BIT * coord(surf_level).u();
-    Direction normal = surf->normal(r_hit_level);
-    normal /= normal.norm();
+  if (beyond_clip_box()) {
+    stop();
+    return false;
+  }
 
-    // Need to apply rotations to find the normal vector in
-    // the base level universe's coordinate system.
-    for (int lev = surf_level - 1; lev >= 0; --lev) {
-      if (coord(lev + 1).rotated()) {
-        const Cell& c {*model::cells[coord(lev).cell()]};
-        normal = normal.inverse_rotate(c.rotation_);
+  // Leaving a universe in a region that none of its cells covers means the
+  // geometry is undefined there
+  if (n_coord() > 1) {
+    mark_as_lost(fmt::format(
+      "Could not locate a ray inside the model, r = {}, u = {}", r(), u()));
+    return false;
+  }
+
+  // Continue through the void, as the model may not be convex
+  in_void_ = true;
+  current_domain_ = C_NONE;
+  exited_open_ = !has_boundary_condition(surface());
+  return true;
+}
+
+void PhongRay::entered_model()
+{
+  // A region between surfaces without boundary conditions that the ray
+  // reaches from inside the model is undefined. Particles get lost there.
+  if (!has_boundary_condition(surface())) {
+    if (exited_open_) {
+      gap_ = true;
+    } else if (start_in_void_) {
+      // The ray started in the void where the clip box cuts through the
+      // model. Look behind the start to see whether the model encloses it.
+      EntryProbeRay probe(start_, -direction_);
+      probe.trace();
+      if (probe.entry_surface() != SURFACE_NONE &&
+          !has_boundary_condition(probe.entry_surface())) {
+        gap_ = true;
       }
     }
-
-    // use the normal opposed to the ray direction
-    if (normal.dot(u()) > 0.0) {
-      normal *= -1.0;
-    }
-
-    // Facing away from the light means no lighting
-    double dotprod = normal.dot(to_light);
-    dotprod = std::max(0.0, dotprod);
-
-    double modulation =
-      plot_.diffuse_fraction_ + (1.0 - plot_.diffuse_fraction_) * dotprod;
-    result_color_ *= modulation;
-
-    // Now point the particle to the camera. We now begin
-    // checking to see if it's occluded by another surface
-    u() = to_light;
-
-    orig_hit_id_ = hit_id;
-
-    // OpenMC native CSG and DAGMC surfaces have some slight differences
-    // in how they interpret particles that are sitting on a surface.
-    // I don't know exactly why, but this makes everything work beautifully.
-    if (surf->geom_type() == GeometryType::DAG) {
-      surface() = 0;
-    } else {
-      surface() = -surface(); // go to other side
-    }
-
-    // Must fully restart coordinate search. Why? Not sure.
-    clear();
-
-    // Note this could likely be faster if we cached the previous
-    // cell we were in before the reflection. This is the easiest
-    // way to fully initialize all the sub-universe coordinates and
-    // directions though.
-    bool found = exhaustive_find_cell(*this);
-    if (!found) {
-      fatal_error("Lost particle after reflection.");
-    }
-
-    // Must recalculate distance to boundary due to the
-    // direction change
-    compute_distance();
-
-  } else {
-    // If it's not facing the light, we color with the diffuse contribution, so
-    // next we check if we're going to occlude the last reflected surface. if
-    // so, color by the diffuse contribution instead
-
-    if (orig_hit_id_ == -1)
-      fatal_error("somehow a ray got reflected but not original ID set?");
-
-    result_color_ = plot_.colors_[orig_hit_id_];
-    result_color_ *= plot_.diffuse_fraction_;
-    stop();
   }
+  in_void_ = false;
+  exited_open_ = false;
+  start_in_void_ = false;
+}
+
+void PhongRay::mark_as_lost(const char* message)
+{
+  // Failing to trace the shadow ray must not hide the surface
+  if (shadow_) {
+    finish_shadow(true);
+    return;
+  }
+
+  // Geometry beyond the clip box is cut away, so it does not matter whether
+  // it is defined
+  if (beyond_clip_box()) {
+    stop();
+    return;
+  }
+  Ray::mark_as_lost(message);
 }
 
 extern "C" int openmc_id_map(const void* plot, int32_t* data_out)
@@ -2246,15 +2653,20 @@ extern "C" int openmc_solidraytrace_plot_set_color_by(
   if (err)
     return err;
 
+  PlottableInterface::PlotColorBy new_color_by;
   if (color_by == 0) {
-    plt->color_by_ = PlottableInterface::PlotColorBy::mats;
+    new_color_by = PlottableInterface::PlotColorBy::mats;
   } else if (color_by == 1) {
-    plt->color_by_ = PlottableInterface::PlotColorBy::cells;
+    new_color_by = PlottableInterface::PlotColorBy::cells;
   } else {
     set_errmsg("Invalid color_by value for SolidRayTracePlot");
     return OPENMC_E_INVALID_ARGUMENT;
   }
 
+  // Opacities are stored per domain index, so they don't carry over
+  if (plt->color_by_ != new_color_by)
+    plt->alphas().clear();
+  plt->color_by_ = new_color_by;
   return 0;
 }
 
@@ -2277,6 +2689,7 @@ extern "C" int openmc_solidraytrace_plot_set_all_opaque(int32_t index)
     return err;
 
   plt->opaque_ids().clear();
+  plt->alphas().clear();
   if (plt->color_by_ == PlottableInterface::PlotColorBy::mats) {
     for (int32_t i = 0; i < model::materials.size(); ++i) {
       plt->opaque_ids().insert(i);
@@ -2505,6 +2918,12 @@ extern "C" int openmc_solidraytrace_plot_update_view(int32_t index)
   if (err)
     return err;
 
+  std::string problem = plt->check_view();
+  if (!problem.empty()) {
+    set_errmsg(problem);
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
   plt->update_view();
   return 0;
 }
@@ -2613,6 +3032,264 @@ extern "C" int openmc_solidraytrace_plot_set_diffuse_fraction(
   }
 
   plt->diffuse_fraction() = diffuse_fraction;
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_get_orthographic_width(
+  int32_t index, double* width)
+{
+  if (!width) {
+    set_errmsg("Invalid arguments passed to "
+               "openmc_solidraytrace_plot_get_orthographic_width");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  // A width of zero denotes a perspective projection
+  *width = std::max(plt->orthographic_width(), 0.0);
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_set_orthographic_width(
+  int32_t index, double width)
+{
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  if (!std::isfinite(width)) {
+    set_errmsg("Orthographic width must be finite");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  // A width that is not positive selects a perspective projection
+  plt->orthographic_width() = width > 0.0 ? width : C_NONE;
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_get_clip_box(
+  int32_t index, double* lower_left, double* upper_right)
+{
+  if (!lower_left || !upper_right) {
+    set_errmsg(
+      "Invalid arguments passed to openmc_solidraytrace_plot_get_clip_box");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  for (int i = 0; i < 3; ++i) {
+    lower_left[i] = plt->clip_lower()[i];
+    upper_right[i] = plt->clip_upper()[i];
+  }
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_set_clip_box(
+  int32_t index, const double* lower_left, const double* upper_right)
+{
+  if (!lower_left || !upper_right) {
+    set_errmsg(
+      "Invalid arguments passed to openmc_solidraytrace_plot_set_clip_box");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  for (int i = 0; i < 3; ++i) {
+    if (std::isnan(lower_left[i]) || std::isnan(upper_right[i]) ||
+        lower_left[i] > upper_right[i]) {
+      set_errmsg("Clip box bounds must not be NaN and the lower left corner "
+                 "may not exceed the upper right corner");
+      return OPENMC_E_INVALID_ARGUMENT;
+    }
+  }
+
+  plt->clip_lower() = {lower_left[0], lower_left[1], lower_left[2]};
+  plt->clip_upper() = {upper_right[0], upper_right[1], upper_right[2]};
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_get_show_cut_faces(
+  int32_t index, bool* show)
+{
+  if (!show) {
+    set_errmsg("Invalid arguments passed to "
+               "openmc_solidraytrace_plot_get_show_cut_faces");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  *show = plt->show_cut_faces();
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_set_show_cut_faces(
+  int32_t index, bool show)
+{
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  plt->show_cut_faces() = show;
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_get_background(
+  int32_t index, uint8_t* r, uint8_t* g, uint8_t* b)
+{
+  if (!r || !g || !b) {
+    set_errmsg(
+      "Invalid arguments passed to openmc_solidraytrace_plot_get_background");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  *r = plt->not_found_.red;
+  *g = plt->not_found_.green;
+  *b = plt->not_found_.blue;
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_set_background(
+  int32_t index, uint8_t r, uint8_t g, uint8_t b)
+{
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  plt->not_found_ = RGBColor(r, g, b);
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_set_domain_styles(int32_t index,
+  int32_t n, const int32_t* ids, const uint8_t* rgb, const double* alpha)
+{
+  if (n < 0 || (n > 0 && !ids)) {
+    set_errmsg("Invalid arguments passed to "
+               "openmc_solidraytrace_plot_set_domain_styles");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  // Validate all of the input before changing anything
+  vector<int32_t> indices(n);
+  for (int32_t i = 0; i < n; ++i) {
+    err = map_phong_domain_id(plt, ids[i], &indices[i]);
+    if (err)
+      return err;
+    if (alpha && std::isnan(alpha[i])) {
+      set_errmsg("Opacity of a SolidRayTracePlot domain cannot be NaN");
+      return OPENMC_E_INVALID_ARGUMENT;
+    }
+  }
+
+  size_t n_domains = plt->color_by_ == PlottableInterface::PlotColorBy::mats
+                       ? model::materials.size()
+                       : model::cells.size();
+  if (rgb && plt->colors_.size() < n_domains)
+    plt->colors_.resize(n_domains, RGBColor(128, 128, 128));
+  if (alpha && plt->alphas().size() < n_domains)
+    plt->alphas().resize(n_domains, 1.0);
+
+  for (int32_t i = 0; i < n; ++i) {
+    int32_t domain_index = indices[i];
+    if (rgb) {
+      plt->colors_[domain_index] =
+        RGBColor(rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]);
+    }
+    if (alpha) {
+      // Hidden domains are fully opaque when they are shown again with
+      // openmc_solidraytrace_plot_set_opaque
+      if (alpha[i] <= 0.0) {
+        plt->opaque_ids().erase(domain_index);
+        plt->alphas()[domain_index] = 1.0;
+      } else {
+        plt->opaque_ids().insert(domain_index);
+        plt->alphas()[domain_index] = std::min(alpha[i], 1.0);
+      }
+    }
+  }
+
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_get_alpha(
+  int32_t index, int32_t id, double* alpha)
+{
+  if (!alpha) {
+    set_errmsg(
+      "Invalid arguments passed to openmc_solidraytrace_plot_get_alpha");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  int32_t domain_index = -1;
+  err = map_phong_domain_id(plt, id, &domain_index);
+  if (err)
+    return err;
+
+  *alpha =
+    plt->domain_visible(domain_index) ? plt->domain_alpha(domain_index) : 0.0;
+  return 0;
+}
+
+extern "C" int openmc_solidraytrace_plot_render(int32_t index, uint8_t* rgb,
+  float* depth, int32_t* ids, float* normals, int32_t width, int32_t height)
+{
+  if (width <= 0 || height <= 0) {
+    set_errmsg("Invalid arguments passed to openmc_solidraytrace_plot_render");
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  SolidRayTracePlot* plt = nullptr;
+  int err = get_solidraytrace_plot_by_index(index, &plt);
+  if (err)
+    return err;
+
+  if (plt->pixels()[0] != width || plt->pixels()[1] != height) {
+    set_errmsg(
+      "Requested image size does not match SolidRayTracePlot pixel settings");
+    return OPENMC_E_INVALID_SIZE;
+  }
+
+  std::string problem = plt->check_view();
+  if (!problem.empty()) {
+    set_errmsg(problem);
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  plt->update_view();
+  plt->render(rgb, depth, ids, normals);
   return 0;
 }
 

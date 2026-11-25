@@ -216,6 +216,26 @@ int openmc_solidraytrace_plot_get_diffuse_fraction(
   int32_t index, double* diffuse_fraction);
 int openmc_solidraytrace_plot_set_diffuse_fraction(
   int32_t index, double diffuse_fraction);
+int openmc_solidraytrace_plot_get_orthographic_width(
+  int32_t index, double* width);
+int openmc_solidraytrace_plot_set_orthographic_width(
+  int32_t index, double width);
+int openmc_solidraytrace_plot_get_clip_box(
+  int32_t index, double* lower_left, double* upper_right);
+int openmc_solidraytrace_plot_set_clip_box(
+  int32_t index, const double* lower_left, const double* upper_right);
+int openmc_solidraytrace_plot_get_show_cut_faces(int32_t index, bool* show);
+int openmc_solidraytrace_plot_set_show_cut_faces(int32_t index, bool show);
+int openmc_solidraytrace_plot_get_background(
+  int32_t index, uint8_t* r, uint8_t* g, uint8_t* b);
+int openmc_solidraytrace_plot_set_background(
+  int32_t index, uint8_t r, uint8_t g, uint8_t b);
+int openmc_solidraytrace_plot_set_domain_styles(int32_t index, int32_t n,
+  const int32_t* ids, const uint8_t* rgb, const double* alpha);
+int openmc_solidraytrace_plot_get_alpha(
+  int32_t index, int32_t id, double* alpha);
+int openmc_solidraytrace_plot_render(int32_t index, uint8_t* rgb, float* depth,
+  int32_t* ids, float* normals, int32_t width, int32_t height);
 int openmc_rectilinear_mesh_get_grid(int32_t index, double** grid_x, int* nx,
   double** grid_y, int* ny, double** grid_z, int* nz);
 int openmc_rectilinear_mesh_set_grid(int32_t index, const double* grid_x,
