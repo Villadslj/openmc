@@ -882,7 +882,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
         const auto& nuc {*data::nuclides[i_nuclide]};
         if (nuc.fissionable_) {
           const auto& rxn {*nuc.fission_rx_[0]};
-          score = rxn.q_value_ * p.neutron_xs(i_nuclide).fission *
+          score = rxn.q_reaction_ * p.neutron_xs(i_nuclide).fission *
                   atom_density * flux;
         }
       } else if (p.material() != MATERIAL_VOID) {
@@ -893,7 +893,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
           const auto& nuc {*data::nuclides[j_nuclide]};
           if (nuc.fissionable_) {
             const auto& rxn {*nuc.fission_rx_[0]};
-            score += rxn.q_value_ * p.neutron_xs(j_nuclide).fission *
+            score += rxn.q_reaction_ * p.neutron_xs(j_nuclide).fission *
                      atom_density * flux;
           }
         }
@@ -1121,8 +1121,11 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
   // Get the pre-collision energy of the particle.
   auto E = p.E_last();
 
-  // Determine how much weight was absorbed due to survival biasing
-  double wgt_absorb = settings::survival_biasing
+  // Survival biasing only applies to neutron transport. In particular, do not
+  // access the neutron cross section cache while scoring a photon collision.
+  const bool neutron_survival_biasing =
+    settings::survival_biasing && p.type().is_neutron();
+  double wgt_absorb = neutron_survival_biasing
                         ? p.wgt_last() *
                             p.neutron_xs(p.event_nuclide()).absorption /
                             p.neutron_xs(p.event_nuclide()).total
@@ -1202,7 +1205,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
       if (!p.type().is_neutron() && !p.type().is_photon())
         continue;
 
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No absorption events actually occur if survival biasing is on --
         // just use weight absorbed in survival biasing
         score = wgt_absorb * flux;
@@ -1219,7 +1222,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     case SCORE_FISSION:
       if (p.macro_xs().fission == 0)
         continue;
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No fission events occur if survival biasing is on -- use collision
         // estimator instead
         if (p.neutron_xs(p.event_nuclide()).total > 0) {
@@ -1243,7 +1246,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     case SCORE_NU_FISSION:
       if (p.macro_xs().fission == 0)
         continue;
-      if (settings::survival_biasing || p.fission()) {
+      if (neutron_survival_biasing || p.fission()) {
         if (tally.energyout_filter_ != C_NONE) {
           // Fission has multiple outgoing neutrons so this helper function
           // is used to handle scoring the multiple filter bins.
@@ -1251,7 +1254,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
           continue;
         }
       }
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No fission events occur if survival biasing is on -- use collision
         // estimator instead
         if (p.neutron_xs(p.event_nuclide()).total > 0) {
@@ -1276,7 +1279,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     case SCORE_PROMPT_NU_FISSION:
       if (p.macro_xs().fission == 0)
         continue;
-      if (settings::survival_biasing || p.fission()) {
+      if (neutron_survival_biasing || p.fission()) {
         if (tally.energyout_filter_ != C_NONE) {
           // Fission has multiple outgoing neutrons so this helper function
           // is used to handle scoring the multiple filter bins.
@@ -1284,7 +1287,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
           continue;
         }
       }
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No fission events occur if survival biasing is on -- need to
         // calculate fraction of absorptions that would have resulted in
         // prompt-nu-fission
@@ -1315,7 +1318,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     case SCORE_DELAYED_NU_FISSION:
       if (p.macro_xs().fission == 0)
         continue;
-      if (settings::survival_biasing || p.fission()) {
+      if (neutron_survival_biasing || p.fission()) {
         if (tally.energyout_filter_ != C_NONE) {
           // Fission has multiple outgoing neutrons so this helper function
           // is used to handle scoring the multiple filter bins.
@@ -1323,7 +1326,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
           continue;
         }
       }
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No fission events occur if survival biasing is on -- need to
         // calculate fraction of absorptions that would have resulted in
         // delayed-nu-fission
@@ -1392,7 +1395,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     case SCORE_DECAY_RATE:
       if (p.macro_xs().fission == 0)
         continue;
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No fission events occur if survival biasing is on -- need to
         // calculate fraction of absorptions that would have resulted in
         // delayed-nu-fission
@@ -1484,14 +1487,14 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
       score = 0.;
       // Kappa-fission values are determined from the Q-value listed for the
       // fission cross section.
-      if (settings::survival_biasing) {
+      if (neutron_survival_biasing) {
         // No fission events occur if survival biasing is on -- need to
         // calculate fraction of absorptions that would have resulted in
         // fission scaled by the Q-value
         const auto& nuc {*data::nuclides[p.event_nuclide()]};
         if (p.neutron_xs(p.event_nuclide()).total > 0 && nuc.fissionable_) {
           const auto& rxn {*nuc.fission_rx_[0]};
-          score = p.wgt_last() * rxn.q_value_ *
+          score = p.wgt_last() * rxn.q_reaction_ *
                   p.neutron_xs(p.event_nuclide()).fission /
                   p.neutron_xs(p.event_nuclide()).total * flux;
         }
@@ -1506,7 +1509,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
         if (p.neutron_xs(p.event_nuclide()).absorption > 0 &&
             nuc.fissionable_) {
           const auto& rxn {*nuc.fission_rx_[0]};
-          score = p.wgt_last() * rxn.q_value_ *
+          score = p.wgt_last() * rxn.q_reaction_ *
                   p.neutron_xs(p.event_nuclide()).fission /
                   p.neutron_xs(p.event_nuclide()).absorption * flux;
         }

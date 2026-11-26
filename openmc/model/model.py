@@ -8,7 +8,7 @@ import math
 from numbers import Integral, Real
 import random
 import re
-from tempfile import NamedTemporaryFile, TemporaryDirectory
+from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 import warnings
 
@@ -948,16 +948,20 @@ class Model:
 
         """
 
-        # Setting tstart here ensures we don't pick up any pre-existing
-        # statepoint files in the output directory -- just in case there are
-        # differences between the system clock and the filesystem, we get the
-        # time of a just-created temporary file
-        with NamedTemporaryFile() as fp:
-            tstart = Path(fp.name).stat().st_mtime
         last_statepoint = None
+        last_mtime = None
 
         # Operate in the provided working directory
         with change_directory(cwd):
+            if self.settings.output and 'path' in self.settings.output:
+                output_dir = Path(self.settings.output['path'])
+            else:
+                output_dir = Path.cwd()
+
+            # Record modification times before execution.
+            existing = {sp: sp.stat().st_mtime_ns
+                        for sp in output_dir.glob('statepoint.*.h5')}
+
             if self.is_initialized:
                 # Handle the run options as applicable
                 # First dont allow ones that must be set via init
@@ -997,15 +1001,13 @@ class Model:
                            tracks, output, Path('.'), openmc_exec, mpi_args,
                            event_based, path_input)
 
-            # Get output directory and return the last statepoint written
-            if self.settings.output and 'path' in self.settings.output:
-                output_dir = Path(self.settings.output['path'])
-            else:
-                output_dir = Path.cwd()
+            # Return the last statepoint written
             for sp in output_dir.glob('statepoint.*.h5'):
-                mtime = sp.stat().st_mtime
-                if mtime >= tstart:  # >= allows for poor clock resolution
-                    tstart = mtime
+                mtime = sp.stat().st_mtime_ns
+                if existing.get(sp) == mtime:
+                    continue
+                if last_statepoint is None or mtime >= last_mtime:
+                    last_mtime = mtime
                     last_statepoint = sp
 
         if apply_tally_results:
@@ -1401,14 +1403,17 @@ class Model:
         y_min = (origin[y] - 0.5*width[1]) * axis_scaling_factor[axis_units]
         y_max = (origin[y] + 0.5*width[1]) * axis_scaling_factor[axis_units]
 
-        # Determine whether any materials contains macroscopic data and if so,
-        # set energy mode accordingly and check that mg cross sections path is accessible
+        # For macroscopic materials, select multigroup mode and require a
+        # cross-section path in the model's materials or global configuration.
         for mat in self.geometry.get_all_materials().values():
             if mat._macroscopic is not None:
                 self.settings.energy_mode = 'multi-group'
-                if 'mg_cross_sections' not in openmc.config:
-                    raise RuntimeError("'mg_cross_sections' path must be set in "
-                                       "openmc.config before plotting.")
+                if (self.materials.cross_sections is None
+                        and 'mg_cross_sections' not in openmc.config):
+                    raise RuntimeError(
+                        'Multigroup cross sections must be specified through '
+                        'model.materials.cross_sections or '
+                        "openmc.config['mg_cross_sections'] before plotting.")
                 break
 
         # Get plot IDs from the C API
@@ -1470,10 +1475,8 @@ class Model:
                 **contour_kwargs
             )
 
-            # If only showing outline, set the axis limits and aspect explicitly
+            # If only showing outline, set the aspect explicitly
             if outline == 'only':
-                axes.set_xlim(x_min, x_max)
-                axes.set_ylim(y_min, y_max)
                 axes.set_aspect('equal')
 
         # Add legend showing which colors represent which material or cell
@@ -1529,6 +1532,10 @@ class Model:
                     xs.append(particle.r[x] * axis_scaling_factor[axis_units])
                     ys.append(particle.r[y] * axis_scaling_factor[axis_units])
             axes.scatter(xs, ys, **source_kwargs)
+
+        # Keep the requested view even when source points lie outside it.
+        axes.set_xlim(x_min, x_max)
+        axes.set_ylim(y_min, y_max)
 
         return axes
 

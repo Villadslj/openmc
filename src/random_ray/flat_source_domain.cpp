@@ -1232,8 +1232,7 @@ void FlatSourceDomain::random_ray_tally()
 double FlatSourceDomain::evaluate_flux_at_point(
   Position r, int64_t sr, int g) const
 {
-  return source_regions_.scalar_flux_final(sr, g) /
-         (settings::n_batches - settings::n_inactive);
+  return source_regions_.scalar_flux_final(sr, g);
 }
 
 // Outputs all basic material, FSR ID, multigroup flux, and
@@ -2178,6 +2177,12 @@ void FlatSourceDomain::set_fw_adjoint_sources()
   // close to zero", we define this as being a fixed fraction of the maximum
   // forward flux, below which we assume the flux would be physically
   // undetectable.
+
+  // The forward sources are done with. A source region that the adjoint solve
+  // discovers (one that rays only crossed in their dead zones, so not kept from
+  // the forward solve) has no forward flux, so it gets no source.
+  external_volumetric_source_map_.clear();
+  external_point_source_map_.clear();
 
   // First, find the maximum forward flux value
   double max_flux = 0.0;
